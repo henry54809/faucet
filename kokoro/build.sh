@@ -11,7 +11,18 @@ ls -alrt /
 #build-debs -b -L -d rodete
 mkdir -p "${TMPDIR}/binary/"
 mkdir -p "${TMPDIR}/glinux-build"
-debchange --newversion $(git describe --tags $(git rev-list --tags --max-count=1)) -b "New upstream release"
+
+$VERSION=$(git describe)
+debchange --newversion $VERSION -b "New upstream release"
+
+cat >faucet/__version__.py <<VER_FILE
+"""Faucet version file"""
+
+__version__ = '$VERSION'
+VER_FILE
+
+cat faucet/__version__.py
+
 glinux-build -type="binary" -base-path="${TMPDIR}/glinux-build" -additional-repos="enterprise-sdn-faucet-core-unstable" -name="rodete" . "${TMPDIR}/binary/"
 mkdir -p binary
 cp ${TMPDIR}/binary/* binary/
