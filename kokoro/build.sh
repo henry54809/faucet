@@ -12,7 +12,7 @@ ls -alrt /
 mkdir -p "${TMPDIR}/binary/"
 mkdir -p "${TMPDIR}/glinux-build"
 
-$VERSION=$(git describe)
+VERSION=$(git describe)
 debchange --newversion $VERSION -b "New upstream release"
 
 cat >faucet/__version__.py <<VER_FILE
