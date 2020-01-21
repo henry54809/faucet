@@ -498,6 +498,11 @@ OFP port number ranges (eg. 1-6).
         of hosts on the mirrored port (for example, a packet with a VLAN
         tag, transmitted to a host on a mirrored and untagged port,
         will be mirrored without its original VLAN tag).
+        NOTE: If packets are exchanged between two ports that are both mirrored,
+        depending on the OpenFlow switch, only one copy of the mirrored
+        traffic may be sent (when a port sends a packet, not when the other
+        receives it). This is because some implementations cannot send
+        a packet more than once to the same port.
     * - name
       - string
       - The configuration key.
@@ -897,8 +902,9 @@ Each acl contains a list of rules: a packet will have the first matching rule
 applied to it.
 
 Each rule is a dictionary containing the single key 'rule' with matches
-and actions. Matches are key/values based on the ryu RESTFul API. Actions
-is a dictionary of actions to apply upon match.
+and actions. Matches are key/values based on the `ryu RESTFul API.
+<https://ryu.readthedocs.io/en/latest/app/ofctl_rest.html#reference-description-of-match-and-actions>`_
+Actions is a dictionary of actions to apply upon match.
 
 .. list-table:: : acls: <acl name>: - rule: actions: {}
     :widths: 30 15 15 40
