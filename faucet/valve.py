@@ -1055,9 +1055,10 @@ class Valve:
         actor_state_collecting = self.dp.lacp_collect_and_distribute(port)
         actor_state_distributing = actor_state_collecting
         actor_state_sync = int(self.dp.lacp_forwarding(port) or not self.dp.stack_root_healthy)
+        actor_state_id = port.lacp if port.lacp == 999 else self.dp.faucet_dp_mac
         if lacp_pkt:
             pkt = valve_packet.lacp_reqreply(
-                self.dp.faucet_dp_mac, port.lacp,
+                self.dp.faucet_dp_mac, actor_state_id,
                 port.lacp, port.number, actor_state_sync, actor_state_activity,
                 actor_state_collecting, actor_state_distributing,
                 lacp_pkt.actor_system, lacp_pkt.actor_key, lacp_pkt.actor_port,
