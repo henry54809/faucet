@@ -30,6 +30,7 @@ import socket
 import tempfile
 import time
 import unittest
+import yaml
 
 from ryu.lib import mac
 from ryu.lib.packet import (
@@ -382,7 +383,7 @@ dps:
                     port: 3
 vlans:
     v100:
-        vid: 100
+        vid: 0x100
     """ % DP1_CONFIG
 
 STACK_LOOP_CONFIG = """
@@ -465,6 +466,7 @@ class ValveTestBases:
         P3_V200_MAC = '00:00:00:02:00:03'
         P1_V300_MAC = '00:00:00:03:00:01'
         UNKNOWN_MAC = '00:00:00:04:00:04'
+        BROADCAST_MAC = 'ff:ff:ff:ff:ff:ff'
         V100 = 0x100 | ofp.OFPVID_PRESENT
         V200 = 0x200 | ofp.OFPVID_PRESENT
         V300 = 0x300 | ofp.OFPVID_PRESENT
@@ -472,22 +474,6 @@ class ValveTestBases:
         ICMP_PAYLOAD = bytes('A'*64, encoding='UTF-8')  # must support 64b payload.
         REQUIRE_TFM = True
         CONFIG_AUTO_REVERT = False
-
-        PKT_P1_P2 = {
-            'eth_src': P1_V100_MAC,
-            'eth_dst': P2_V100_MAC,
-            'ipv4_src': '10.0.0.1',
-            'ipv4_dst': '10.0.0.2',
-            'vid': V100
-        }
-
-        PKT_P2_P1 = {
-            'eth_src': P2_V100_MAC,
-            'eth_dst': P1_V100_MAC,
-            'ipv4_src': '10.0.0.2',
-            'ipv4_dst': '10.0.0.1',
-            'vid': V100
-        }
 
         def __init__(self, *args, **kwargs):
             self.dot1x = None
@@ -734,6 +720,8 @@ class ValveTestBases:
             """Activate all stack ports through LLDP"""
             for valve in self.valves_manager.valves.values():
                 valve.dp.dyn_running = True
+                for port in valve.dp.ports.values():
+                    port.dyn_phys_up = True
                 for port in valve.dp.stack_ports:
                     self.up_stack_port(port, dp_id=valve.dp.dp_id)
                     self._update_port_map(port, True)
@@ -960,6 +948,21 @@ class ValveTestBases:
                 self.assertTrue(self.table.is_output(bcast_match, port=out_port), msg=msg)
             else:
                 self.assertFalse(self.table.is_output(bcast_match, port=out_port), msg=msg)
+
+        def pkt_match(self, src, dst):
+            """Make a unicast packet match dict for the given src & dst"""
+            return {
+                'eth_src': '00:00:00:01:00:%02x' % src,
+                'eth_dst': '00:00:00:01:00:%02x' % dst,
+                'ipv4_src': '10.0.0.%d' % src,
+                'ipv4_dst': '10.0.0.%d' % dst,
+                'vid': self.V100
+            }
+
+        def _config_edge_learn_stack_root(self, new_value):
+            config = yaml.load(self.CONFIG, Loader=yaml.SafeLoader)
+            config['vlans']['v100']['edge_learn_stack_root'] = new_value
+            return yaml.dump(config)
 
 
     class ValveTestBig(ValveTestSmall):
