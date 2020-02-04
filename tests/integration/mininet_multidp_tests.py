@@ -109,6 +109,7 @@ class FaucetStringOfDPLACPUntaggedTest(FaucetMultiDPTest):
 
     NUM_DPS = 2
     NUM_HOSTS = 2
+    SOFTWARE_ONLY = True
     match_bcast = {'dl_vlan': FaucetMultiDPTest.vlan_vid(0), 'dl_dst': 'ff:ff:ff:ff:ff:ff'}
     action_str = 'OUTPUT:%u'
 
@@ -256,6 +257,7 @@ class FaucetStackStringOfDPUntaggedTest(FaucetMultiDPTest):
 
     NUM_DPS = 2
     NUM_HOSTS = 2
+    SOFTWARE_ONLY = True
 
     def test_untagged(self):
         """All untagged hosts in stack topology can reach each other."""
@@ -575,6 +577,7 @@ class FaucetStringOfDPACLOverrideTest(FaucetMultiDPTest):
 
     NUM_DPS = 1
     NUM_HOSTS = 2
+    SOFTWARE_ONLY = True
 
     # ACL rules which will get overridden.
     def acls(self):
@@ -680,6 +683,7 @@ class FaucetTunnelSameDpTest(FaucetMultiDPTest):
 
     NUM_DPS = 2
     NUM_HOSTS = 2
+    SOFTWARE_ONLY = True
     SWITCH_TO_SWITCH_LINKS = 2
 
     def acls(self):
@@ -726,6 +730,7 @@ class FaucetTunnelTest(FaucetMultiDPTest):
 
     NUM_DPS = 2
     NUM_HOSTS = 2
+    SOFTWARE_ONLY = True
     SWITCH_TO_SWITCH_LINKS = 2
 
     def acls(self):
@@ -957,3 +962,57 @@ class FaucetSingleUntaggedVlanStackFloodTest(FaucetTopoTestBase):
         src_host = self.host_information[1]['host']
         dst_ip = self.host_information[0]['ip']
         self.host_ping(src_host, dst_ip.ip)
+
+
+class FaucetUntaggedStackTransitTest(FaucetTopoTestBase):
+    """Test that L2 connectivity exists over a transit switch with no VLANs"""
+
+    NUM_DPS = 3
+    NUM_HOSTS = 2
+    NUM_VLANS = 1
+    SOFTWARE_ONLY = True
+
+    def setUp(self):
+        """Set up network with transit switch with no hosts"""
+        super(FaucetUntaggedStackTransitTest, self).setUp()
+        stack_roots = {0: 1}
+        dp_links = FaucetTopoGenerator.dp_links_networkx_graph(networkx.path_graph(self.NUM_DPS))
+        host_links = {0: [0], 1: [2]}
+        host_vlans = {0: 0, 1: 0}
+        self.build_net(
+            n_dps=self.NUM_DPS, n_vlans=self.NUM_VLANS, dp_links=dp_links,
+            host_links=host_links, host_vlans=host_vlans,
+            stack_roots=stack_roots)
+        self.start_net()
+
+    def test_hosts_connect_over_stack_transit(self):
+        """Test to ensure that hosts can be connected over stack transit switches"""
+        self.verify_stack_up()
+        self.verify_intervlan_routing()
+
+
+class FaucetUntaggedStackTransitVLANTest(FaucetTopoTestBase):
+    """Test that L2 connectivity exists over a transit switch with different VLANs"""
+
+    NUM_DPS = 3
+    NUM_HOSTS = 2
+    NUM_VLANS = 2
+    SOFTWARE_ONLY = True
+
+    def setUp(self):
+        """Set up network with transit switch on different VLAN"""
+        super(FaucetUntaggedStackTransitVLANTest, self).setUp()
+        stack_roots = {0: 1}
+        dp_links = FaucetTopoGenerator.dp_links_networkx_graph(networkx.path_graph(self.NUM_DPS))
+        host_links = {0: [0], 1: [1], 2: [2]}
+        host_vlans = {0: 0, 1: 1, 2: 0}
+        self.build_net(
+            n_dps=self.NUM_DPS, n_vlans=self.NUM_VLANS, dp_links=dp_links,
+            host_links=host_links, host_vlans=host_vlans,
+            stack_roots=stack_roots)
+        self.start_net()
+
+    def test_hosts_connect_over_stack_transit(self):
+        """Test to ensure that hosts can be connected over stack transit switches"""
+        self.verify_stack_up()
+        self.verify_intervlan_routing()
