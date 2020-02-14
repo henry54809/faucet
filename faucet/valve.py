@@ -917,7 +917,7 @@ class Valve:
                     max_len=128))
 
             if port.lacp:
-                ofmsgs.extend(self.lacp_update(port, False, cold_start=cold_start))
+                ofmsgs.extend(self.lacp_update(port, False, cold_start=True))
                 if port.lacp_active:
                     ofmsgs.extend(self._lacp_actions(port.dyn_last_lacp_pkt, port))
 
