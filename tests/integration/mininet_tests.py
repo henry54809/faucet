@@ -1685,6 +1685,62 @@ class FaucetUntaggedApplyMeterTest(FaucetUntaggedMeterParseTest):
         self.assertTrue(byte_band_count)
 
 
+class FaucetUntaggedMeterAddTest(FaucetUntaggedMeterParseTest):
+
+    def test_untagged(self):
+        super(FaucetUntaggedMeterAddTest, self).test_untagged()
+        conf = self._get_faucet_conf()
+        del conf['acls']
+        conf['meters']['lossymeter2'] = {
+            'meter_id': 2,
+            'entry': {
+                'flags': ['PKTPS'],
+                'bands': [{'rate': '1000', 'type': 'DROP'}]
+            },
+        }
+        self.reload_conf(
+            conf, self.faucet_config_path,
+            restart=True, cold_start=False, change_expected=True, hup=True)
+        self.wait_until_matching_lines_from_file(
+            r'.+\'meter_id\'\: 2+',
+            self.get_matching_meters_on_dpid(self.dpid))
+
+
+class FaucetUntaggedMeterDeleteTest(FaucetUntaggedMeterParseTest):
+
+    def test_untagged(self):
+        super(FaucetUntaggedMeterDeleteTest, self).test_untagged()
+        conf = self._get_faucet_conf()
+        del conf['meters']['lossymeter']
+        self.reload_conf(
+            conf, self.faucet_config_path,
+            restart=True, cold_start=False, change_expected=True)
+        self.wait_until_no_matching_lines_from_file(
+            r'.+meter_id+',
+            self.get_matching_meters_on_dpid(self.dpid))
+
+
+class FaucetUntaggedMeterModTest(FaucetUntaggedMeterParseTest):
+
+    def test_untagged(self):
+        super(FaucetUntaggedMeterModTest, self).test_untagged()
+        conf = self._get_faucet_conf()
+        del conf['acls']
+        conf['meters']['lossymeter'] = {
+            'meter_id': 1,
+            'entry': {
+                'flags': ['PKTPS'],
+                'bands': [{'rate': '1000', 'type': 'DROP'}]
+            },
+        }
+        self.reload_conf(
+            conf, self.faucet_config_path,
+            restart=True, cold_start=False, change_expected=True, hup=True)
+        self.wait_until_matching_lines_from_file(
+            r'.+PKTPS+',
+            self.get_matching_meters_on_dpid(self.dpid))
+
+
 class FaucetUntaggedHairpinTest(FaucetUntaggedTest):
 
     NETNS = True
@@ -3962,19 +4018,19 @@ details partner lacp pdu:
             require_lag_up_ports(1)
             # We have connectivity with only one port.
             self.one_ipv4_ping(
-                first_host, self.FAUCET_VIPV4.ip, require_host_learned=False, intf=bond)
+                first_host, self.FAUCET_VIPV4.ip, require_host_learned=False, intf=bond, retries=5)
             for port in lag_ports:
                 self.set_port_up(self.port_map['port_%u' % port])
             # We have connectivity with two ports.
             require_lag_up_ports(2)
             require_linux_bond_up()
             self.one_ipv4_ping(
-                first_host, self.FAUCET_VIPV4.ip, require_host_learned=False, intf=bond)
+                first_host, self.FAUCET_VIPV4.ip, require_host_learned=False, intf=bond, retries=5)
             # We have connectivity if that random port goes down.
             self.set_port_down(self.port_map['port_%u' % up_port])
             require_lag_up_ports(1)
             self.one_ipv4_ping(
-                first_host, self.FAUCET_VIPV4.ip, require_host_learned=False, intf=bond)
+                first_host, self.FAUCET_VIPV4.ip, require_host_learned=False, intf=bond, retries=5)
             for port in lag_ports:
                 self.set_port_up(self.port_map['port_%u' % port])
 

@@ -97,7 +97,9 @@ configuration.
         'max_resolve_backoff_time': 64,
         # Max number of seconds to back off to when resolving nexthops.
         'packetin_pps': None,
-        # Ask switch to rate limit packet pps. TODO: Not supported by OVS in 2.7.0
+        # Ask switch to rate limit packetin pps. TODO: Not supported by OVS in 2.7.0
+        'slowpath_pps': None,
+        # Ask switch to rate limit slowpath pps. TODO: Not supported by OVS in 2.7.0
         'learn_jitter': 0,
         # Jitter learn timeouts by up to this many seconds
         'learn_ban_timeout': 0,
@@ -176,6 +178,7 @@ configuration.
         'max_host_fib_retry_count': int,
         'max_resolve_backoff_time': int,
         'packetin_pps': int,
+        'slowpath_pps': int,
         'learn_jitter': int,
         'learn_ban_timeout': int,
         'advertise_interval': int,
@@ -284,6 +287,7 @@ configuration.
         self.ofchannel_log = None
         self.output_only_ports = None
         self.packetin_pps = None
+        self.slowpath_pps = None
         self.ports = None
         self.priority_offset = None
         self.proactive_learn_v4 = None
@@ -688,7 +692,7 @@ configuration.
 
     def lacp_up_ports(self):
         """Return ports that have LACP up."""
-        return tuple([port for port in self.lacp_ports() if port.dyn_lacp_up])
+        return tuple([port for port in self.lacp_ports() if port.is_actor_up()])
 
     def lags(self):
         """Return dict of LAGs mapped to member ports."""
@@ -737,20 +741,6 @@ configuration.
             self.hairpin_ports.append(port)
         if port.lacp and port.lacp_active:
             self.lacp_active_ports.append(port)
-
-    def lacp_forwarding(self, port):
-        """Return 1 if should signal forwarding on a LACP bundle on this DP."""
-        # TODO: just handle stacks with multiple roots - add further useful combinations.
-        if port.loop_protect_external:
-            if self.stack_root_name and not self.is_stack_root():
-                return 0
-        return 1
-
-    def lacp_collect_and_distribute(self, port):
-        """Return 1 if LACP should advertise collect and distribute on this port."""
-        if port.lacp_collect_and_distribute:
-            return 1
-        return self.lacp_forwarding(port)
 
     def lldp_beacon_send_ports(self, now):
         """Return list of ports to send LLDP packets; stacked ports always send LLDP."""
@@ -1484,9 +1474,23 @@ configuration.
             if changed_acl_ports:
                 same_ports -= changed_acl_ports
                 logger.info('ports where ACL only changed: %s' % changed_acl_ports)
-
         return (all_ports_changed, deleted_ports,
                 added_ports.union(changed_ports), changed_acl_ports)
+
+    def _get_meter_config_changes(self, logger, new_dp):
+        """Detect any config changes to meters.
+        Args:
+            logger (ValveLogger): logger instance.
+            new_dp (DP): new dataplane configuration.
+        Returns:
+            changes (tuple) of:
+                deleted_meters (set): deleted Meter IDs.
+                changed_meters (set): changed/added Meter IDs.
+        """
+        all_meters_changed, deleted_meters, added_meters, changed_meters, _ = self._get_conf_changes(
+            logger, 'METERS', self.meters, new_dp.meters)
+
+        return (all_meters_changed, deleted_meters, added_meters, changed_meters)
 
     def get_config_changes(self, logger, new_dp):
         """Detect any config changes.
@@ -1503,6 +1507,8 @@ configuration.
                 deleted_vlans (set): deleted VLAN IDs.
                 changed_vlans (set): changed/added VLAN IDs.
                 all_ports_changed (bool): True if all ports changed.
+                deleted_meters (set): deleted meter numbers
+                changed_meters (set): changed/added meter numbers
         """
         def _table_configs(dp):
             return frozenset([
@@ -1519,13 +1525,17 @@ configuration.
         else:
             changed_acls = self._get_acl_config_changes(logger, new_dp)
             deleted_vlans, changed_vlans = self._get_vlan_config_changes(logger, new_dp)
-            (all_ports_changed, deleted_ports,
-             changed_ports, changed_acl_ports) = self._get_port_config_changes(
+            (all_ports_changed, deleted_ports, changed_ports,
+             changed_acl_ports) = self._get_port_config_changes(
                  logger, new_dp, changed_vlans, changed_acls)
+            (all_meters_changed, deleted_meters,
+             added_meters, changed_meters) = self._get_meter_config_changes(logger, new_dp)
             return (deleted_ports, changed_ports, changed_acl_ports,
-                    deleted_vlans, changed_vlans, all_ports_changed)
+                    deleted_vlans, changed_vlans, all_ports_changed,
+                    all_meters_changed, deleted_meters,
+                    added_meters, changed_meters)
         # default cold start
-        return (set(), set(), set(), set(), set(), True)
+        return (set(), set(), set(), set(), set(), True, True, set(), set(), set())
 
     def get_tables(self):
         """Return tables as dict for API call."""

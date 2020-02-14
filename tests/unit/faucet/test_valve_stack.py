@@ -19,6 +19,7 @@
 
 from functools import partial
 import unittest
+import ipaddress
 import yaml
 
 from ryu.lib import mac
@@ -26,12 +27,210 @@ from ryu.ofproto import ofproto_v1_3 as ofp
 
 from faucet import valves_manager
 from faucet import valve_of
-from faucet.port import STACK_STATE_INIT, STACK_STATE_UP
+from faucet.port import (
+    STACK_STATE_INIT, STACK_STATE_UP,
+    LACP_PORT_SELECTED, LACP_PORT_UNSELECTED)
 
 from fakeoftable import CONTROLLER_PORT
 
 from valve_test_lib import (
     BASE_DP1_CONFIG, CONFIG, STACK_CONFIG, STACK_LOOP_CONFIG, ValveTestBases)
+
+
+class ValveStackMCLAGTestCase(ValveTestBases.ValveTestSmall):
+    """Test stacked MCLAG"""
+
+    CONFIG = """
+dps:
+    s1:
+%s
+        stack:
+            priority: 1
+        interfaces:
+            1:
+                description: p1
+                stack:
+                    dp: s2
+                    port: 1
+            2:
+                description: p2
+                native_vlan: 100
+            3:
+                description: p3
+                native_vlan: 100
+                lacp: 1
+            4:
+                description: p4
+                native_vlan: 100
+                lacp: 1
+    s2:
+        hardware: 'GenericTFM'
+        dp_id: 0x2
+        interfaces:
+            1:
+                description: p1
+                stack:
+                    dp: s1
+                    port: 1
+            2:
+                description: p2
+                native_vlan: 100
+            3:
+                description: p3
+                native_vlan: 100
+                lacp: 1
+            4:
+                description: p4
+                native_vlan: 100
+                lacp: 1
+""" % BASE_DP1_CONFIG
+
+    def setUp(self):
+        """Setup basic loop config"""
+        self.setup_valve(self.CONFIG)
+
+    def get_other_valves(self, valve):
+        """Return other running valves"""
+        return self.valves_manager._other_running_valves(valve)  # pylint: disable=protected-access
+
+    def test_dpid_nominations(self):
+        """Test dpids are nominated correctly"""
+        self.activate_all_ports()
+        lacp_ports = {}
+        for valve in self.valves_manager.valves.values():
+            for port in valve.dp.ports.values():
+                if port.lacp:
+                    lacp_ports.setdefault(valve.dp.dp_id, [])
+                    lacp_ports[valve.dp.dp_id].append(port)
+                    port.actor_up()
+        valve = self.valves_manager.valves[0x1]
+        other_valves = self.get_other_valves(valve)
+        # Equal number of LAG ports, choose root DP
+        nominated_dpid = valve.get_lacp_dpid_nomination(1, other_valves)[0]
+        self.assertEqual(
+            nominated_dpid, 0x1,
+            'Expected nominated DPID %s but found %s' % (0x1, nominated_dpid))
+        # Choose DP with most UP LAG ports
+        lacp_ports[0x1][0].actor_noact()
+        nominated_dpid = valve.get_lacp_dpid_nomination(1, other_valves)[0]
+        self.assertEqual(
+            nominated_dpid, 0x2,
+            'Expected nominated DPID %s but found %s' % (0x2, nominated_dpid))
+
+    def test_no_dpid_nominations(self):
+        """Test dpid nomination doesn't nominate when no LACP ports are up"""
+        self.activate_all_ports()
+        valve = self.valves_manager.valves[0x1]
+        other_valves = self.get_other_valves(valve)
+        # No actors UP so should return None
+        nominated_dpid = valve.get_lacp_dpid_nomination(1, other_valves)[0]
+        self.assertEqual(
+            nominated_dpid, None,
+            'Did not expect to nominate DPID %s' % nominated_dpid)
+        # No other valves so should return None
+        for valve in self.valves_manager.valves.values():
+            for port in valve.dp.ports.values():
+                if port.lacp:
+                    port.actor_up()
+        nominated_dpid = valve.get_lacp_dpid_nomination(1, None)[0]
+        self.assertEqual(
+            nominated_dpid, None,
+            'Did not expect to nominate DPID %s' % nominated_dpid)
+
+    def test_nominated_dpid_port_selection(self):
+        """Test a nominated port selection state is changed"""
+        self.activate_all_ports()
+        lacp_ports = {}
+        for valve in self.valves_manager.valves.values():
+            for port in valve.dp.ports.values():
+                if port.lacp:
+                    lacp_ports.setdefault(valve, [])
+                    lacp_ports[valve].append(port)
+                    port.actor_up()
+        for valve, ports in lacp_ports.items():
+            other_valves = self.get_other_valves(valve)
+            for port in ports:
+                self.assertTrue(
+                    valve.lacp_update_port_selection_state(port, other_valves),
+                    'Port selection state not updated')
+                if valve.dp.dp_id == 0x1:
+                    self.assertEqual(
+                        port.lacp_port_state(), LACP_PORT_SELECTED,
+                        'Expected LACP port %s DP %s to be SELECTED' % (port, valve))
+                else:
+                    self.assertEqual(
+                        port.lacp_port_state(), LACP_PORT_UNSELECTED,
+                        'Expected LACP port %s DP %s to be UNSELECTED' % (port, valve))
+
+    def test_lag_flood(self):
+        """Test flooding is allowed for UP & SELECTED LAG links only"""
+        self.activate_all_ports()
+        main_valve = self.valves_manager.valves[0x1]
+        main_other_valves = self.get_other_valves(main_valve)
+        # Start with all LAG links NOACT & UNSELECTED
+        self.validate_flood(2, 0, 3, False, 'Flooded out UNSELECTED & NOACT LAG port')
+        self.validate_flood(2, 0, 4, False, 'Flooded out UNSELECTED & NOACT LAG port')
+        # Set UP & SELECTED one s1 LAG link
+        port3 = main_valve.dp.ports[3]
+        port4 = main_valve.dp.ports[4]
+        self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
+        self.apply_ofmsgs(main_valve.lacp_update(port3, False, 1, 1, main_other_valves))
+        self.validate_flood(2, 0, 3, False, 'Flooded out NOACT LAG port')
+        self.validate_flood(2, 0, 4, True, 'Did not flood out SELECTED LAG port')
+        # Set UP & SELECTED s2 LAG links
+        valve = self.valves_manager.valves[0x2]
+        other_valves = self.get_other_valves(valve)
+        for port in valve.dp.ports.values():
+            if port.lacp:
+                valve.lacp_update(port, True, 1, 1, other_valves)
+        self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
+        self.apply_ofmsgs(main_valve.lacp_update(port3, False, 1, 1, main_other_valves))
+        self.validate_flood(2, 0, 3, False, 'Flooded out UNSELECTED & NOACT LAG port')
+        self.validate_flood(2, 0, 4, False, 'Flooded out UNSELECTED LAG port')
+        # Set UP & SELECTED both s1 LAG links
+        self.apply_ofmsgs(main_valve.lacp_update(port3, True, 1, 1, main_other_valves))
+        self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
+        self.validate_flood(2, 0, 3, True, 'Did not flood out SELECTED LAG port')
+        self.validate_flood(2, 0, 4, False, 'Flooded out multiple LAG ports')
+
+    def test_lag_pipeline_accept(self):
+        """Test packets entering through UP & SELECTED LAG links"""
+        self.activate_all_ports()
+        main_valve = self.valves_manager.valves[0x1]
+        main_other_valves = self.get_other_valves(main_valve)
+        # Packet initially rejected
+        self.validate_flood(
+            3, 0, None, False, 'Packet incoming through UNSELECTED & NOACT port was accepted')
+        self.validate_flood(
+            4, 0, None, False, 'Packet incoming through UNSELECTED & NOACT port was accepted')
+        # Set one s1 LAG port 4 to SELECTED & UP
+        port3 = main_valve.dp.ports[3]
+        port4 = main_valve.dp.ports[4]
+        self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
+        self.apply_ofmsgs(main_valve.lacp_update(port3, False, 1, 1, main_other_valves))
+        self.validate_flood(
+            3, 0, None, False, 'Packet incoming through NOACT port was accepted')
+        self.validate_flood(
+            4, 0, None, True, 'Packet incoming through SELECTED port was not accepted')
+        # Set UP & SELECTED s2 LAG links, set one s1 port down
+        valve = self.valves_manager.valves[0x2]
+        other_valves = self.get_other_valves(valve)
+        for port in valve.dp.ports.values():
+            if port.lacp:
+                valve.lacp_update(port, True, 1, 1, other_valves)
+        self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
+        self.apply_ofmsgs(main_valve.lacp_update(port3, False, 1, 1, main_other_valves))
+        self.validate_flood(
+            3, 0, None, False, 'Packet incoming through UNSELECTED & NOACT port was accepted')
+        self.validate_flood(
+            4, 0, None, False, 'Packet incoming through UNSELECTED port was accepted')
+        # Set UP & SELECTED both s1 LAG links
+        self.apply_ofmsgs(main_valve.lacp_update(port3, True, 1, 1, main_other_valves))
+        self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
+        self.validate_flood(
+            3, 0, None, True, 'Packet incoming through SELECTED port was not accepted')
+        self.validate_flood(
+            4, 0, None, True, 'Packet incoming through SELECTED port was not accepted')
 
 
 class ValveStackRootExtLoopProtectTestCase(ValveTestBases.ValveTestSmall):
@@ -168,10 +367,12 @@ class ValveStackChainTest(ValveTestBases.ValveTestSmall):
         self.assertFalse(self._learning_from_bcast(4), 'learn from access port broadcast')
 
     def test_stack_learn_edge(self):
+        """Test stack learned edge"""
         self.activate_all_ports()
         self.validate_edge_learn_ports()
 
     def test_stack_learn_root(self):
+        """Test stack learned root"""
         self.update_config(self._config_edge_learn_stack_root(True))
         self.activate_all_ports()
         self.validate_edge_learn_ports()
@@ -309,6 +510,7 @@ class ValveStackRedundantLink(ValveStackLoopTest):
 
 
 class ValveStackNonRootExtLoopProtectTestCase(ValveTestBases.ValveTestSmall):
+    """Test non-root external loop protect"""
 
     CONFIG = """
 dps:
@@ -369,6 +571,7 @@ dps:
         self.set_stack_port_up(1)
 
     def test_loop_protect(self):
+        """Test expected table outputs for external loop protect"""
         mcast_match = {
             'in_port': 2,
             'eth_dst': mac.BROADCAST_STR,
@@ -388,6 +591,7 @@ dps:
 
 
 class ValveStackAndNonStackTestCase(ValveTestBases.ValveTestSmall):
+    """Test stacked switches can exist with non-stacked switches"""
 
     CONFIG = """
 dps:
@@ -432,6 +636,7 @@ dps:
         self.setup_valve(self.CONFIG)
 
     def test_nonstack_dp_port(self):
+        """Test that finding a path from a stack swithc to a non-stack switch cannot happen"""
         self.assertEqual(None, self.valves_manager.valves[0x3].dp.shortest_path_port('s1'))
 
 
@@ -444,17 +649,20 @@ class ValveStackRedundancyTestCase(ValveTestBases.ValveTestSmall):
         self.setup_valve(self.CONFIG)
 
     def dp_by_name(self, dp_name):
+        """Get DP by DP name"""
         for valve in self.valves_manager.valves.values():
             if valve.dp.name == dp_name:
                 return valve.dp
         return None
 
     def set_stack_all_ports_status(self, dp_name, status):
+        """Set all stack ports to status on dp"""
         dp = self.dp_by_name(dp_name)
         for port in dp.stack_ports:
             port.dyn_stack_current_state = status
 
     def test_redundancy(self):
+        """Test redundant stack connections"""
         now = 1
         # All switches are down to start with.
         for dpid in self.valves_manager.valves:
@@ -537,6 +745,7 @@ class ValveRootStackTestCase(ValveTestBases.ValveTestSmall):
         self.verify_flooding(matches)
 
     def test_topo(self):
+        """Test DP is assigned appropriate edge/root states"""
         dp = self.valves_manager.valves[self.DP_ID].dp
         self.assertTrue(dp.is_stack_root())
         self.assertFalse(dp.is_stack_edge())
@@ -586,6 +795,7 @@ class ValveEdgeStackTestCase(ValveTestBases.ValveTestSmall):
             self.table.is_output(match, port=ofp.OFPP_CONTROLLER, vid=unexpressed_vid))
 
     def test_topo(self):
+        """Test DP is assigned appropriate edge/root states"""
         dp = self.valves_manager.valves[self.DP_ID].dp
         self.assertFalse(dp.is_stack_root())
         self.assertTrue(dp.is_stack_edge())
@@ -698,6 +908,7 @@ class ValveStackGraphBreakTestCase(ValveStackLoopTest):
         self.validate_flooding(rerouted=True)
 
     def _set_max_lldp_lost(self, new_value):
+        """Set the interface config option max_lldp_lost"""
         config = yaml.load(self.CONFIG, Loader=yaml.SafeLoader)
         for dp in config['dps'].values():
             for interface in dp['interfaces'].values():
@@ -907,8 +1118,156 @@ class ValveTestIPV6StackedRouting(ValveTestBases.ValveTestStackedRouting):
         }
 
 
+class ValveInterVLANStackFlood(ValveTestBases.ValveTestSmall):
+    """Test that the stack ports get flooded to for interVLAN packets"""
+
+    VLAN100_FAUCET_MAC = '00:00:00:00:00:11'
+    VLAN200_FAUCET_MAC = '00:00:00:00:00:22'
+    VLAN100_FAUCET_VIPS = '10.1.0.254'
+    VLAN100_FAUCET_VIP_SPACE = '10.1.0.254/24'
+    VLAN200_FAUCET_VIPS = '10.2.0.254'
+    VLAN200_FAUCET_VIP_SPACE = '10.2.0.254/24'
+    DST_ADDRESS = ipaddress.IPv4Address('10.1.0.1')
+
+    def base_config(self):
+        """Create the base config"""
+        return """
+routers:
+    router1:
+        vlans: [vlan100, vlan200]
+dps:
+    s1:
+        hardware: 'GenericTFM'
+        dp_id: 1
+        interfaces:
+            1:
+                native_vlan: vlan100
+            2:
+                native_vlan: vlan200
+            3:
+                stack: {dp: s2, port: 3}
+    s2:
+        dp_id: 2
+        stack: {priority: 1}
+        interfaces:
+            1:
+                native_vlan: vlan100
+            2:
+                native_vlan: vlan200
+            3:
+                stack: {dp: s1, port: 3}
+            4:
+                stack: {dp: s3, port: 3}
+    s3:
+        dp_id: 3
+        interfaces:
+            1:
+                native_vlan: vlan100
+            2:
+                native_vlan: vlan200
+            3:
+                stack: {dp: s2, port: 4}
+            4:
+                stack: {dp: s4, port: 3}
+    s4:
+        dp_id: 4
+        interfaces:
+            1:
+                native_vlan: vlan100
+            2:
+                native_vlan: vlan200
+            3:
+                stack: {dp: s3, port: 4}
+"""
+
+    def create_config(self):
+        """Create the config file"""
+        self.CONFIG = """
+vlans:
+    vlan100:
+        vid: 100
+        faucet_mac: '%s'
+        faucet_vips: ['%s']
+    vlan200:
+        vid: 200
+        faucet_mac: '%s'
+        faucet_vips: ['%s']
+%s
+        """ % (self.VLAN100_FAUCET_MAC, self.VLAN100_FAUCET_VIP_SPACE,
+               self.VLAN200_FAUCET_MAC, self.VLAN200_FAUCET_VIP_SPACE,
+               self.base_config())
+
+    def setUp(self):
+        """Create a stacking config file."""
+        self.create_config()
+        self.setup_valve(self.CONFIG)
+        self.activate_all_ports()
+        for valve in self.valves_manager.valves.values():
+            for port in valve.dp.ports.values():
+                if port.stack:
+                    self.set_stack_port_up(port.number, valve)
+
+    def flood_manager_flood_ports(self, flood_manager):
+        """Return list of port numbers that will be flooded to"""
+        return [port.number for port in flood_manager._stack_flood_ports()]  # pylint: disable=protected-access
+
+    def route_manager_ofmsgs(self, route_manager, vlan):
+        """Return ofmsgs for route stack link flooding"""
+        faucet_vip = list(vlan.faucet_vips_by_ipv(4))[0].ip
+        ofmsgs = route_manager._flood_stack_links(  # pylint: disable=protected-access
+            route_manager._gw_resolve_pkt(), vlan, route_manager.multi_out,  # pylint: disable=protected-access
+            vlan.faucet_mac, valve_of.mac.BROADCAST_STR,
+            faucet_vip, self.DST_ADDRESS)
+        return ofmsgs
+
+    def test_flood_towards_root_from_s1(self):
+        """Test intervlan flooding goes towards the root"""
+        output_ports = [3]
+        valve = self.valves_manager.valves[1]
+        ports = self.flood_manager_flood_ports(valve.flood_manager)
+        self.assertEqual(output_ports, ports, 'InterVLAN flooding does not match expected')
+        route_manager = valve._route_manager_by_ipv.get(4, None)
+        vlan = valve.dp.vlans[100]
+        ofmsgs = self.route_manager_ofmsgs(route_manager, vlan)
+        self.assertTrue(self.packet_outs_from_flows(ofmsgs))
+
+    def test_flood_away_from_root(self):
+        """Test intervlan flooding goes away from the root"""
+        output_ports = [3, 4]
+        valve = self.valves_manager.valves[2]
+        ports = self.flood_manager_flood_ports(valve.flood_manager)
+        self.assertEqual(output_ports, ports, 'InterVLAN flooding does not match expected')
+        route_manager = valve._route_manager_by_ipv.get(4, None)
+        vlan = valve.dp.vlans[100]
+        ofmsgs = self.route_manager_ofmsgs(route_manager, vlan)
+        self.assertTrue(self.packet_outs_from_flows(ofmsgs))
+
+    def test_flood_towards_root_from_s3(self):
+        """Test intervlan flooding only goes towards the root (s4 will get the reflection)"""
+        output_ports = [3]
+        valve = self.valves_manager.valves[3]
+        ports = self.flood_manager_flood_ports(valve.flood_manager)
+        self.assertEqual(output_ports, ports, 'InterVLAN flooding does not match expected')
+        route_manager = valve._route_manager_by_ipv.get(4, None)
+        vlan = valve.dp.vlans[100]
+        ofmsgs = self.route_manager_ofmsgs(route_manager, vlan)
+        self.assertTrue(self.packet_outs_from_flows(ofmsgs))
+
+    def test_flood_towards_root_from_s4(self):
+        """Test intervlan flooding goes towards the root (through s3)"""
+        output_ports = [3]
+        valve = self.valves_manager.valves[4]
+        ports = self.flood_manager_flood_ports(valve.flood_manager)
+        self.assertEqual(output_ports, ports, 'InterVLAN flooding does not match expected')
+        route_manager = valve._route_manager_by_ipv.get(4, None)
+        vlan = valve.dp.vlans[100]
+        ofmsgs = self.route_manager_ofmsgs(route_manager, vlan)
+        self.assertTrue(self.packet_outs_from_flows(ofmsgs))
+
+
 class ValveTestTunnel(ValveTestBases.ValveTestSmall):
     """Test valve tunnel methods"""
+
     TUNNEL_ID = 200
     CONFIG = """
 acls:
@@ -1081,75 +1440,6 @@ dps:
         dp = self.valves_manager.valves[self.DP_ID].dp
         self.assertTrue(dp.is_stack_root())
         self.assertFalse(dp.is_stack_edge())
-
-
-class ValveStackCollectDistributeLACPTestCase(ValveTestBases.ValveTestSmall):
-    """Test stack topology with 3 electable roots and one LACP link each."""
-
-    CONFIG = """
-dps:
-    s1:
-        dp_id: 0x1
-        hardware: 'GenericTFM'
-        stack:
-            priority: 1
-        interfaces:
-            1:
-                lacp: 1
-                native_vlan: 100
-                loop_protect_external: True
-            2:
-                stack:
-                    dp: s2
-                    port: 2
-    s2:
-        dp_id: 0x2
-        hardware: 'GenericTFM'
-        stack:
-            priority: 2
-        interfaces:
-            1:
-                lacp: 1
-                native_vlan: 100
-                loop_protect_external: True
-            2:
-                stack:
-                    dp: s1
-                    port: 2
-            3:
-                stack:
-                    dp: s3
-                    port: 2
-    s3:
-        dp_id: 0x3
-        hardware: 'GenericTFM'
-        stack:
-            priority: 3
-        interfaces:
-            1:
-                lacp: 1
-                native_vlan: 100
-                loop_protect_external: True
-                lacp_collect_and_distribute: True
-            2:
-                stack:
-                    dp: s2
-                    port: 3
-    """
-
-    def setUp(self):
-        self.setup_valve(self.CONFIG)
-
-    def test_topo(self):
-        """Test topology functions."""
-        dp_ids = [0x1, 0x2, 0x3]
-        port = 1
-        want_collect_and_distribute = [1, 0, 1]
-
-        valves = [self.valves_manager.valves[dp_id] for dp_id in dp_ids]
-        ports = [valve.dp.ports[port] for valve in valves]
-        c_and_d = [valves[i].dp.lacp_collect_and_distribute(ports[i]) for i in range(0, len(dp_ids))]
-        self.assertEqual(c_and_d, want_collect_and_distribute)
 
 
 class ValveTwoDpRootEdge(ValveTestBases.ValveTestSmall):
