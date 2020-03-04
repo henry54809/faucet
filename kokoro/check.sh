@@ -11,7 +11,8 @@ git fetch --tags origin gmaster
 git fetch --tags perry master
 git fetch --tags perry gmaster
 
-mtag=`git describe perry/master`
+# FaucetSDN doesn't use annotated tags for their versions...
+mtag=`git describe --tags perry/master`
 gtag=`git describe perry/gmaster`
 
 echo Checking remote master tag $mtag
