@@ -56,15 +56,13 @@ class HostCacheEntry:
         'eth_src',
         'eth_src_int',
         'port',
-        'l3_src_ip',
     ]
 
-    def __init__(self, eth_src, port, cache_time, l3_src_ip):
+    def __init__(self, eth_src, port, cache_time):
         self.eth_src = eth_src
         self.port = port
         self.cache_time = cache_time
         self.eth_src_int = int(eth_src.replace(':', ''), 16)
-        self.l3_src_ip = l3_src_ip
 
     def __hash__(self):
         return hash((self.eth_src_int, self.port.number))
@@ -277,7 +275,7 @@ class VLAN(Conf):
         self.dot1x_untagged = tuple([port for port in sorted_ports
                                      if self == port.dyn_dot1x_native_vlan])
 
-    def add_cache_host(self, eth_src, port, cache_time, l3_src_ip):
+    def add_cache_host(self, eth_src, port, cache_time):
         """Add/update a host to the cache on a port at at time."""
         existing_entry = self.cached_host(eth_src)
         if existing_entry is None:
@@ -285,7 +283,7 @@ class VLAN(Conf):
         else:
             self.dyn_host_cache_by_port[existing_entry.port.number].remove(
                 existing_entry)
-        entry = HostCacheEntry(eth_src, port, cache_time, l3_src_ip)
+        entry = HostCacheEntry(eth_src, port, cache_time)
         if port.number not in self.dyn_host_cache_by_port:
             self.dyn_host_cache_by_port[port.number] = set()
         self.dyn_host_cache_by_port[port.number].add(entry)
