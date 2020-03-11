@@ -4,12 +4,18 @@ echo faucet `git remote get-url faucet`
 echo origin `git remote get-url origin`
 echo pperry `git remote get-url perry`
 
-echo Fetching remotes...
-git fetch --tags faucet master
-git fetch --tags origin master
-git fetch --tags origin gmaster
-git fetch --tags perry master
-git fetch --tags perry gmaster
+fetch="git fetch --tags"
+glog="git log -n 1 --pretty=oneline"
+
+for repo in faucet origin perry; do
+    for branch in master gmaster; do
+	if [ $repo != faucet -o $branch != gmaster ]; then
+	    echo Updating $repo $branch
+	    $fetch $repo $branch
+	    $glog $repo/$branch
+	fi
+    done
+done
 
 # FaucetSDN doesn't use annotated tags for their versions...
 mtag=`git describe --tags perry/master`
