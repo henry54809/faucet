@@ -1193,7 +1193,7 @@ class Valve:
             pkt_meta.reparse_all()
             lacp_pkt = valve_packet.parse_lacp_pkt(pkt_meta.pkt)
             if lacp_pkt:
-                self.logger.info('receive LACP %s on %s' % (lacp_pkt, pkt_meta.port))
+                self.logger.debug('receive LACP %s on %s' % (lacp_pkt, pkt_meta.port))
                 # Respond to new LACP packet or if we haven't sent anything in a while
                 age = None
                 if pkt_meta.port.dyn_lacp_last_resp_time:
