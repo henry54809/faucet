@@ -18,8 +18,8 @@ for repo in faucet origin perry; do
 done
 
 # FaucetSDN doesn't use annotated tags for their versions...
-mtag=`git describe --tags perry/master`
-gtag=`git describe perry/gmaster`
+mtag=`git describe --tags --abbrev=0 perry/master`
+gtag=`git describe --abbrev=0 perry/gmaster`
 
 echo Checking remote master tag $mtag
 fm=`git ls-remote faucet $mtag`
