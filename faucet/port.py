@@ -133,7 +133,7 @@ class Port(Conf):
         # If true, this port cannot send non-ARP/IPv6 ND broadcasts to other restricted_bcast_arpnd ports.
         'coprocessor': {},
         # If defined, this port is attached to a packet coprocessor.
-        'count_untag_vlan_miss': {},
+        'count_untag_vlan_miss': False,
         # If defined, this port will explicitly count unconfigured native VLAN packets.
     }
 
@@ -458,6 +458,18 @@ class Port(Conf):
         if self.lacp and not self.dyn_lacp_up:
             return False
         return True
+
+    def contains_tunnel_acl(self, tunnel_id=None):
+        """Searches through acls_in for a tunnel ACL with a matching tunnel_id"""
+        if self.acls_in:
+            for acl in self.acls_in:
+                if acl.is_tunnel_acl():
+                    if tunnel_id:
+                        if acl.get_tunnel_rules(tunnel_id):
+                            return True
+                    else:
+                        return True
+        return False
 
     # LACP functions
     def lacp_actor_update(self, lacp_up, now=None, lacp_pkt=None, cold_start=False):

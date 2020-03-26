@@ -171,7 +171,7 @@ class Valve:
             for port_number in self.dp.ports.keys():
                 self._port_highwater[vlan_vid][port_number] = 0
         restricted_bcast_arpnd = bool(self.dp.restricted_bcast_arpnd_ports())
-        if self.dp.stack:
+        if self.dp.stack_graph:
             flood_class = valve_flood.ValveFloodStackManagerNoReflection
             if self.dp.stack_root_flood_reflection:
                 flood_class = valve_flood.ValveFloodStackManagerReflection
@@ -186,7 +186,7 @@ class Valve:
                 self.dp.stack_ports, self.dp.has_externals,
                 self.dp.shortest_path_to_root, self.dp.shortest_path_port,
                 self.dp.is_stack_root, self.dp.is_stack_root_candidate,
-                self.dp.is_stack_edge, self.dp.stack.get('graph', None))
+                self.dp.is_stack_edge, self.dp.stack_graph)
         else:
             self.flood_manager = valve_flood.ValveFloodManager(
                 self.logger, self.dp.tables['flood'], self.pipeline,
@@ -202,7 +202,7 @@ class Valve:
             fib_table = self.dp.tables[fib_table_name]
             proactive_learn = getattr(self.dp, 'proactive_learn_v%u' % ipv)
             valve_flood_manager = None
-            if self.dp.stack:
+            if self.dp.stack_graph:
                 valve_flood_manager = self.flood_manager
             route_manager = route_manager_class(
                 self.logger, self.notify, self.dp.global_vlan, neighbor_timeout,
@@ -229,7 +229,7 @@ class Valve:
             self.dp.vlans, self.dp.tables['eth_src'],
             self.dp.tables['eth_dst'], eth_dst_hairpin_table, self.pipeline,
             self.dp.timeout, self.dp.learn_jitter, self.dp.learn_ban_timeout,
-            self.dp.cache_update_guard_time, self.dp.idle_dst, self.dp.stack,
+            self.dp.cache_update_guard_time, self.dp.idle_dst, self.dp.stack_graph,
             self.dp.has_externals, self.dp.stack_root_flood_reflection)
         self.acl_manager = None
         if self.dp.has_acls:
@@ -646,13 +646,12 @@ class Valve:
             self.logger.info('%u stack ports changed state' % stack_changes)
             notify_dps = {}
             for valve in stacked_valves:
-                valve.update_tunnel_flowrules()
                 if not valve.dp.dyn_running:
                     continue
-                ofmsgs_by_valve[valve].extend(valve.get_tunnel_flowmods())
                 ofmsgs_by_valve[valve].extend(valve.add_vlans(valve.dp.vlans.values()))
                 for port in valve.dp.stack_ports:
                     ofmsgs_by_valve[valve].extend(valve.host_manager.del_port(port))
+                ofmsgs_by_valve[valve].extend(valve.get_tunnel_flowmods())
                 path_port = valve.dp.shortest_path_port(valve.dp.stack_root_name)
                 path_port_number = path_port.number if path_port else 0.0
                 self._set_var(
@@ -661,32 +660,61 @@ class Valve:
 
             # Find the first valve with a valid stack and trigger notification.
             for valve in stacked_valves:
-                graph = valve.dp.get_node_link_data()
-                if graph:
+                if valve.dp.stack_graph:
                     self.notify(
                         {'STACK_TOPO_CHANGE': {
                             'stack_root': valve.dp.stack_root_name,
-                            'graph': graph,
+                            'graph': valve.dp.stack_graph,
                             'dps': notify_dps
                             }})
                     break
-
         return ofmsgs_by_valve
 
-    def update_tunnel_flowrules(self):
-        """Update tunnel ACL rules because the stack topology has changed"""
-        if self.dp.tunnel_acls:
-            for tunnel_id, tunnel_acl in self.dp.tunnel_acls.items():
-                updated = tunnel_acl.update_tunnel_acl_conf(self.dp)
-                if updated:
-                    self.dp.tunnel_updated_flags[tunnel_id] = True
-                    self.logger.info('updated tunnel %s' % tunnel_id)
+    def acl_update_tunnel(self, acl):
+        """Return ofmsgs for a ACL with a tunnel rule"""
+        ofmsgs = []
+        source_vids = {}
+        for _id, info in acl.tunnel_info.items():
+            # Update the tunnel rules for each tunnel action specified
+            updated_sources = []
+            for i, source in enumerate(acl.tunnel_sources):
+                # Update each tunnel rule for each tunnel source
+                src_dp = source['dp']
+                dst_dp, dst_port = info['dst_dp'], info['dst_port']
+                out_port = None
+                shortest_path = self.dp.shortest_path(dst_dp, src_dp=src_dp)
+                if self.dp.name in shortest_path:
+                    # We are in the path, so we need to update
+                    if self.dp.name == dst_dp:
+                        out_port = dst_port
+                    if not out_port:
+                        out_port = self.dp.shortest_path_port(dst_dp).number
+                    updated = acl.update_source_tunnel_rules(
+                        self.dp.name, i, _id, out_port)
+                    if updated:
+                        if self.dp.name == src_dp:
+                            source_vids.setdefault(i, [])
+                            source_vids[i].append(_id)
+                        else:
+                            updated_sources.append(i)
+            if updated_sources:
+                for source_id in updated_sources:
+                    ofmsgs.extend(self.acl_manager.build_tunnel_rules_ofmsgs(
+                        source_id, _id, acl))
+        if source_vids:
+            for source_id, vids in source_vids.items():
+                for vid in vids:
+                    ofmsgs.extend(self.acl_manager.build_tunnel_acl_rule_ofmsgs(
+                        source_id, vid, acl))
+        return ofmsgs
 
     def get_tunnel_flowmods(self):
-        """Returns flowmods for the tunnels"""
-        if self.acl_manager:
-            return self.acl_manager.create_acl_tunnel(self.dp)
-        return []
+        """Return ofmsgs for all tunnel ACLs in the DP"""
+        ofmsgs = []
+        if self.dp.tunnel_acls:
+            for acl in self.dp.tunnel_acls:
+                ofmsgs.extend(self.acl_update_tunnel(acl))
+        return ofmsgs
 
     def fast_state_expire(self, now, other_valves):
         """Called periodically to verify the state of stack ports."""
@@ -1030,7 +1058,7 @@ class Valve:
             bool: True if port state changed
         """
         nominated_dpid = self.dp.dp_id
-        if self.dp.stack:
+        if self.dp.stack_graph:
             nominated_dpid, _ = self.get_lacp_dpid_nomination(port.lacp, other_valves)
         prev_state = port.lacp_port_state()
         new_state = port.lacp_port_update(self.dp.dp_id == nominated_dpid, cold_start=cold_start)
@@ -1470,7 +1498,7 @@ class Valve:
                 'packet with all zeros eth_src %s port %u' % (
                     pkt_meta.eth_src, in_port))
             return None
-        if self.dp.stack is not None:
+        if self.dp.stack_graph:
             if (not pkt_meta.port.stack and
                     pkt_meta.vlan and
                     pkt_meta.vlan not in pkt_meta.port.tagged_vlans and
@@ -1758,7 +1786,8 @@ class Valve:
             new_dp: (DP): new dataplane configuration.
             changes (tuple) of:
                 deleted_ports (set): deleted port numbers.
-                changed_ports (set): changed/added port numbers.
+                changed_ports (set): changed port numbers.
+                added_ports (set): added port numbers.
                 changed_acl_ports (set): changed ACL only port numbers.
                 deleted_vids (set): deleted VLAN IDs.
                 changed_vids (set): changed/added VLAN IDs.
@@ -1772,7 +1801,7 @@ class Valve:
                 cold_start (bool): whether cold starting.
                 ofmsgs (list): OpenFlow messages.
         """
-        (deleted_ports, changed_ports, changed_acl_ports,
+        (deleted_ports, changed_ports, added_ports, changed_acl_ports,
          deleted_vids, changed_vids, all_ports_changed,
          _, deleted_meters, added_meters, changed_meters) = changes
 
@@ -1836,6 +1865,8 @@ class Valve:
             ofmsgs.extend(self.add_vlans(changed_vlans))
         if changed_ports:
             ofmsgs.extend(self.ports_add(all_up_port_nos))
+        if added_ports:
+            ofmsgs.extend(self.ports_add(added_ports))
         if self.acl_manager and changed_acl_ports:
             for port_num in changed_acl_ports:
                 port = self.dp.ports[port_num]
