@@ -65,7 +65,6 @@ if [ "$mbase" != "$mref" ]; then
     echo Error:
     echo "  git merge-base $mtag $gtag"
     echo does not match expected $mtag
-    echo Likely gmaster has been merged into master...
     echo
     false
 fi
