@@ -69,5 +69,13 @@ if [ "$mbase" != "$mref" ]; then
     false
 fi
 
-echo
+mbaseg=`git merge-base $gtag perry/gmaster`
+gref=`git rev-list -n 1 $gtag`
+if [ "$mbaseg" != "$gref" ]; then
+    echo
+    echo Error:
+    echo "  git merge-base $gtag perry/gmaster"
+    echo does not match expected $gtag
+    echo
+fi
 echo All remote tags check out.
