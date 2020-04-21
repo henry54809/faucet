@@ -27,6 +27,7 @@ from ryu.lib.packet import arp, icmp, icmpv6, ipv4, ipv6
 
 from faucet import valve_of
 from faucet import valve_packet
+from faucet.valve_switch_stack import ValveSwitchStackManagerBase
 from faucet.valve_manager_base import ValveManagerBase
 
 
@@ -110,7 +111,7 @@ class ValveRouteManager(ValveManagerBase):
         'route_priority',
         'routers',
         'vip_table',
-        'flood_manager',
+        'switch_manager',
     ]
 
     IPV = 0
@@ -124,7 +125,7 @@ class ValveRouteManager(ValveManagerBase):
     def __init__(self, logger, notify, global_vlan, neighbor_timeout,
                  max_hosts_per_resolve_cycle, max_host_fib_retry_count,
                  max_resolve_backoff_time, proactive_learn, dec_ttl, multi_out,
-                 fib_table, vip_table, pipeline, routers, flood_manager):
+                 fib_table, vip_table, pipeline, routers, switch_manager):
         self.notify = notify
         self.logger = logger
         self.global_vlan = AnonVLAN(global_vlan)
@@ -142,7 +143,7 @@ class ValveRouteManager(ValveManagerBase):
         self.routers = routers
         self.active = False
         self.global_routing = self._global_routing()
-        self.flood_manager = flood_manager
+        self.switch_manager = switch_manager
         if self.global_routing:
             self.logger.info('global routing enabled')
 
@@ -175,8 +176,8 @@ class ValveRouteManager(ValveManagerBase):
     def _flood_stack_links(self, pkt_builder, vlan, multi_out=True, *args):
         """Return flood packet-out actions to stack ports for gw resolving"""
         ofmsgs = []
-        if self.flood_manager:
-            ports = self.flood_manager._stack_flood_ports()
+        if isinstance(self.switch_manager, ValveSwitchStackManagerBase):
+            ports = self.switch_manager._stack_flood_ports()
             if ports:
                 running_port_nos = [port.number for port in ports if port.running()]
                 pkt = pkt_builder(vlan.vid, *args)
@@ -885,7 +886,7 @@ class ValveIPv4RouteManager(ValveRouteManager):
         self.notify_learn(pkt_meta)
         return ofmsgs
 
-    def _control_plane_icmp_handler(self, pkt_meta, ipv4_pkt):
+    def _control_plane_icmp_handler(self, now, pkt_meta, ipv4_pkt):
         """Handle ICMP packets destined for the router"""
         ofmsgs = []
         if ipv4_pkt.proto != valve_of.inet.IPPROTO_ICMP:
@@ -902,6 +903,11 @@ class ValveIPv4RouteManager(ValveRouteManager):
                         pkt_meta.vlan.faucet_mac, pkt_meta.eth_src,
                         pkt_meta.l3_dst, pkt_meta.l3_src,
                         icmp_pkt.data))
+                # ping but no previous ARP request for FAUCET VIP
+                # from this host. Missed ARP request or host has
+                # static ARP entry for us?
+                if self._cached_nexthop_eth_dst(pkt_meta.vlan, pkt_meta.l3_src) is None:
+                    ofmsgs.extend(self.add_host_fib_route_from_pkt(now, pkt_meta))
         return ofmsgs
 
     def control_plane_handler(self, now, pkt_meta):
@@ -914,7 +920,7 @@ class ValveIPv4RouteManager(ValveRouteManager):
             if ipv4_pkt is None:
                 return []
             icmp_replies = self._control_plane_icmp_handler(
-                pkt_meta, ipv4_pkt)
+                now, pkt_meta, ipv4_pkt)
             if icmp_replies:
                 return icmp_replies
         return super(ValveIPv4RouteManager, self).control_plane_handler(now, pkt_meta)
@@ -1038,7 +1044,7 @@ class ValveIPv6RouteManager(ValveRouteManager):
                 break
         return ofmsgs
 
-    def _echo_request_handler(self, _now, pkt_meta, ipv6_pkt, icmpv6_pkt):
+    def _echo_request_handler(self, now, pkt_meta, ipv6_pkt, icmpv6_pkt):
         ofmsgs = []
         if self._unicast_to_vip(pkt_meta):
             ofmsgs.append(
@@ -1048,6 +1054,11 @@ class ValveIPv6RouteManager(ValveRouteManager):
                     pkt_meta.l3_dst, pkt_meta.l3_src, ipv6_pkt.hop_limit,
                     icmpv6_pkt.data.id, icmpv6_pkt.data.seq,
                     icmpv6_pkt.data.data))
+            # ping but no previous ND request for FAUCET VIP
+            # from this host. Missed ND request or host has
+            # static ND entry for us?
+            if self._cached_nexthop_eth_dst(pkt_meta.vlan, pkt_meta.l3_src) is None:
+                ofmsgs.extend(self.add_host_fib_route_from_pkt(now, pkt_meta))
         return ofmsgs
 
     _icmpv6_handlers = {
