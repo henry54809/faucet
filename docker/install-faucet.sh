@@ -22,7 +22,8 @@ $APK add -U git $BUILDDEPS && \
 if [ "$ARCH" == "armhf" ]; then
   echo "Skipping tests on $ARCH platform"
 else
-  echo $FROOT/tests/unit/faucet/test_*.py $FROOT/tests/unit/gauge/test_*.py | xargs realpath | shuf | parallel --delay 1 --bar --halt now,fail=1 -j 2 python3 -m pytest
+  # echo $FROOT/tests/unit/faucet/test_*.py $FROOT/tests/unit/gauge/test_*.py | xargs realpath | shuf | parallel --delay 1 --bar --halt now,fail=1 -j 2 python3 -m pytest
+  echo $FROOT/tests/unit/gauge/test_*.py | xargs realpath | shuf | parallel --delay 1 --bar --halt now,fail=1 -j 2 python3 -m pytest
 fi
 
 pip3 uninstall -y $TESTDEPS || exit 1
