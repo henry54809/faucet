@@ -31,11 +31,38 @@ from faucet import valve_switch
 from faucet import valve_table
 from faucet import valve_util
 from faucet import valve_pipeline
+from faucet.valve_manager_base import ValveManagerBase
 from faucet.valve_coprocessor import CoprocessorManager
 from faucet.valve_lldp import ValveLLDPManager
 from faucet.valve_outonly import OutputOnlyManager
 from faucet.valve_switch_stack import ValveSwitchStackManagerBase
 from faucet.vlan import NullVLAN
+
+
+# TODO: has to be here to avoid eventlet monkey patch in faucet_dot1x.
+class Dot1xManager(ValveManagerBase):
+
+    def __init__(self, dot1x, dp_id, dot1x_ports, nfv_sw_port):
+        self.dot1x = dot1x
+        self.dp_id = dp_id
+        self.dot1x_ports = dot1x_ports
+        self.nfv_sw_port = nfv_sw_port
+
+    def del_port(self, port):
+        ofmsgs = []
+        if port.dot1x:
+            ofmsgs.extend(self.dot1x.port_down(self.dp_id, port, self.nfv_sw_port))
+        return ofmsgs
+
+    def add_port(self, port):
+        ofmsgs = []
+        if port == self.nfv_sw_port:
+            ofmsgs.extend(self.dot1x.nfv_sw_port_up(
+                self.dp_id, self.dot1x_ports(), self.nfv_sw_port))
+        elif port.dot1x:
+            ofmsgs.extend(self.dot1x.port_up(
+                self.dp_id, port, self.nfv_sw_port))
+        return ofmsgs
 
 
 class ValveLogger:
@@ -77,7 +104,7 @@ class Valve:
 
     __slots__ = [
         '_coprocessor_manager',
-        '_nfv_sw_port',
+        '_dot1x_manager',
         '_last_advertise_sec',
         '_last_fast_advertise_sec',
         '_last_packet_in_sec',
@@ -179,9 +206,10 @@ class Valve:
             self.dp.tables['vlan'], self.dp.highest_priority)
         self._output_only_manager = OutputOnlyManager(
             self.dp.tables['vlan'], self.dp.highest_priority)
-        self._nfv_sw_port = None
+        self._dot1x_manager = None
         if self.dp.dot1x:
-            self._nfv_sw_port = self.dp.ports[self.dp.dot1x['nfv_sw_port']]
+            nfv_sw_port = self.dp.ports[self.dp.dot1x['nfv_sw_port']]
+            self._dot1x_manager = Dot1xManager(self.dot1x, self.dp.dp_id, self.dp.dot1x_ports, nfv_sw_port)
 
         self.pipeline = valve_pipeline.ValvePipeline(self.dp)
         self.switch_manager = valve_switch.valve_switch_factory(self.logger, self.dp, self.pipeline)
@@ -793,13 +821,8 @@ class Valve:
             for manager in self._managers:
                 ofmsgs.extend(manager.add_port(port))
 
-            if self.dp.dot1x:
-                if port == self._nfv_sw_port:
-                    ofmsgs.extend(self.dot1x.nfv_sw_port_up(
-                        self.dp.dp_id, self.dp.dot1x_ports(), self._nfv_sw_port))
-                elif port.dot1x:
-                    ofmsgs.extend(self.dot1x.port_up(
-                        self.dp.dp_id, port, self._nfv_sw_port))
+            if self._dot1x_manager:
+                ofmsgs.extend(self._dot1x_manager.add_port(port))
 
             if port.output_only:
                 continue
@@ -854,10 +877,10 @@ class Valve:
             if port.output_only:
                 continue
 
-            vlans_with_deleted_ports.update(set(port.vlans()))
+            if self._dot1x_manager:
+                ofmsgs.extend(self._dot1x_manager.del_port(port))
 
-            if port.dot1x:
-                ofmsgs.extend(self.dot1x.port_down(self.dp.dp_id, port, self._nfv_sw_port))
+            vlans_with_deleted_ports.update(set(port.vlans()))
 
             if port.lacp:
                 ofmsgs.extend(self.lacp_update(port, False, other_valves=other_valves))
@@ -1270,8 +1293,10 @@ class Valve:
                     pkt_meta.reparse_ip()
                 learn_log = 'L2 learned on %s %s (%u hosts total)' % (
                     learn_port, pkt_meta.log(), pkt_meta.vlan.hosts_count())
+                stack_descr = None
                 if pkt_meta.port.stack:
-                    learn_log += ' from %s' % pkt_meta.port.stack_descr()
+                    stack_descr = pkt_meta.port.stack_descr()
+                    learn_log += ' from %s' % stack_descr
                 previous_port_no = None
                 if previous_port is not None:
                     previous_port_no = previous_port.number
@@ -1283,16 +1308,18 @@ class Valve:
                 learn_labels = dict(self.dp.base_prom_labels(), vid=pkt_meta.vlan.vid,
                                     eth_src=pkt_meta.eth_src)
                 self._set_var('learned_l2_port', learn_port.number, labels=learn_labels)
-                self.notify(
-                    {'L2_LEARN': {
-                        'port_no': learn_port.number,
-                        'previous_port_no': previous_port_no,
-                        'vid': pkt_meta.vlan.vid,
-                        'eth_src': pkt_meta.eth_src,
-                        'eth_dst': pkt_meta.eth_dst,
-                        'eth_type': pkt_meta.eth_type,
-                        'l3_src_ip': str(pkt_meta.l3_src),
-                        'l3_dst_ip': str(pkt_meta.l3_dst)}})
+                l2_learn_msg = {
+                    'port_no': learn_port.number,
+                    'previous_port_no': previous_port_no,
+                    'vid': pkt_meta.vlan.vid,
+                    'eth_src': pkt_meta.eth_src,
+                    'eth_dst': pkt_meta.eth_dst,
+                    'eth_type': pkt_meta.eth_type,
+                    'l3_src_ip': str(pkt_meta.l3_src),
+                    'l3_dst_ip': str(pkt_meta.l3_dst)}
+                if stack_descr:
+                    l2_learn_msg.update({'stack_descr': stack_descr})
+                self.notify({'L2_LEARN': l2_learn_msg})
             return learn_flows
         return []
 

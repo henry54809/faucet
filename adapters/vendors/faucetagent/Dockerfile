@@ -1,20 +1,21 @@
 ## Image name: faucet/adapter-faucetagent
 
-FROM faucet/base:4.0.0
+FROM faucet/base:5.0.0
 LABEL maintainer="Charlie Lewis <clewis@iqt.org>"
 
 ENV PYTHONUNBUFFERED=0
 
 RUN apk add --update \
-    python3 \
-    python3-dev \
     gcc \
     git \
     g++ \
     go \
+    linux-headers \
     make \
     musl-dev \
     psmisc \
+    python3 \
+    python3-dev \
     && rm -rf /var/cache/apk/*
 
 ENV GOROOT /usr/lib/go

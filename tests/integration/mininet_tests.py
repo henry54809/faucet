@@ -1274,62 +1274,51 @@ class Faucet8021XVLANTest(Faucet8021XSuccessTest):
         self.one_ipv4_ping(
             self.eapol1_host, self.eapol2_host.IP(),
             require_host_learned=False, expected_result=True)
-        self.wait_until_no_matching_flow(
-            {'eth_src': self.eapol1_host.MAC(),
-             'vlan_vid': vid},
-            table_id=self._ETH_SRC_TABLE)
-        self.wait_until_no_matching_flow(
-            {'eth_src': self.eapol1_host.MAC(),
-             'vlan_vid': radius_vid1},
+
+        self.wait_until_matching_flow(
+            {'eth_src': self.eapol1_host.MAC(), 'vlan_vid': radius_vid2},
             table_id=self._ETH_SRC_TABLE)
         self.wait_until_matching_flow(
-            {'eth_src': self.eapol1_host.MAC(),
-             'vlan_vid': radius_vid2},
+            {'eth_src': self.eapol1_host.MAC(), 'vlan_vid': radius_vid2},
             table_id=self._ETH_SRC_TABLE)
         self.wait_until_no_matching_flow(
-            {'eth_dst': self.eapol1_host.MAC(),
-             'vlan_vid': vid},
+            {'eth_src': self.eapol1_host.MAC(), 'vlan_vid': vid},
+            table_id=self._ETH_SRC_TABLE)
+        self.wait_until_no_matching_flow(
+            {'eth_src': self.eapol1_host.MAC(), 'vlan_vid': radius_vid1},
+            table_id=self._ETH_SRC_TABLE)
+        self.wait_until_no_matching_flow(
+            {'eth_dst': self.eapol1_host.MAC(), 'vlan_vid': vid},
             table_id=self._ETH_DST_TABLE)
         self.wait_until_no_matching_flow(
-            {'eth_dst': self.eapol1_host.MAC(),
-             'vlan_vid': radius_vid1},
-            table_id=self._ETH_DST_TABLE)
-        self.wait_until_matching_flow(
-            {'eth_dst': self.eapol1_host.MAC(),
-             'vlan_vid': radius_vid2},
+            {'eth_dst': self.eapol1_host.MAC(), 'vlan_vid': radius_vid1},
             table_id=self._ETH_DST_TABLE)
 
         # test port up/down. removes the dynamic vlan & host cache.
         self.flap_port(port_no2)
 
-        self.wait_until_no_matching_flow(
-            {'eth_src': self.eapol2_host.MAC()},
-            table_id=self._ETH_SRC_TABLE)
-        self.wait_until_no_matching_flow(
-            {'eth_dst': self.eapol2_host.MAC(),
-             'vlan_vid': radius_vid1},
-            table_id=self._ETH_DST_TABLE,
-            actions=['POP_VLAN', 'OUTPUT:%s' % port_no2])
-
-        # check ports are back in the right vlans.
-        self.wait_until_no_matching_flow(
-            {'in_port': port_no2},
-            table_id=self._VLAN_TABLE,
-            actions=['SET_FIELD: {vlan_vid:%u}' % radius_vid2])
         self.wait_until_matching_flow(
             {'in_port': port_no2},
             table_id=self._VLAN_TABLE,
             actions=['SET_FIELD: {vlan_vid:%u}' % vid])
-
-        # check flood ports are in the right vlans
+        self.wait_until_matching_flow(
+            {'vlan_vid': vid},
+            table_id=self._FLOOD_TABLE,
+            actions=['POP_VLAN', 'OUTPUT:%s' % port_no2])
+        self.wait_until_no_matching_flow(
+            {'in_port': port_no2},
+            table_id=self._VLAN_TABLE,
+            actions=['SET_FIELD: {vlan_vid:%u}' % radius_vid2])
         self.wait_until_no_matching_flow(
             {'vlan_vid': radius_vid2},
             table_id=self._FLOOD_TABLE,
             actions=['POP_VLAN', 'OUTPUT:%s' % port_no1, 'OUTPUT:%s' % port_no2])
-
-        self.wait_until_matching_flow(
-            {'vlan_vid': vid},
-            table_id=self._FLOOD_TABLE,
+        self.wait_until_no_matching_flow(
+            {'eth_src': self.eapol2_host.MAC()},
+            table_id=self._ETH_SRC_TABLE)
+        self.wait_until_no_matching_flow(
+            {'eth_dst': self.eapol2_host.MAC(), 'vlan_vid': radius_vid1},
+            table_id=self._ETH_DST_TABLE,
             actions=['POP_VLAN', 'OUTPUT:%s' % port_no2])
 
         self.post_test_checks()
@@ -5524,6 +5513,20 @@ vlans:
              (second_host, self.port_map['port_2'])),
             MIN_MBPS, first_host_ip, second_host_ip,
             sync_counters_func=lambda: self.one_ipv4_ping(first_host, second_host_ip))
+        tagged_ports = (self.port_map['port_1'], self.port_map['port_2'], self.port_map['port_4'])
+        for port in tagged_ports:
+            self.wait_until_matching_flow(
+                {'vlan_vid': 100, 'in_port': port},
+                table_id=self._VLAN_TABLE,
+                actions=['GOTO_TABLE:%u' % self._ETH_SRC_TABLE])
+        self.change_port_config(
+            self.port_map['port_3'], 'mirror', None,
+            restart=True, cold_start=False)
+        for port in tagged_ports:
+            self.wait_until_matching_flow(
+                {'vlan_vid': 100, 'in_port': port},
+                table_id=self._VLAN_TABLE,
+                actions=['GOTO_TABLE:%u' % self._ETH_SRC_TABLE])
 
 
 class FaucetTaggedVLANPCPTest(FaucetTaggedTest):
