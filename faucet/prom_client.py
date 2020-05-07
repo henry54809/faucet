@@ -25,6 +25,8 @@ from pbr.version import VersionInfo
 from prometheus_client import Gauge as PromGauge
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
+from faucet.__version__ import __version__
+
 
 # Ryu's WSGI implementation doesn't always set QUERY_STRING
 def make_wsgi_app(registry):
@@ -54,7 +56,10 @@ class PromClient: # pylint: disable=too-few-public-methods
         if reg is not None:
             self._reg = reg
         # TODO: investigate faster alternative (https://bugs.launchpad.net/pbr/+bug/1688405)
-        self.version = VersionInfo('faucet').semantic_version().release_string()
+        # The way self.version is populated differs from that in master. This is
+        # intentional and is intended to be a long term deviance since faucetsdn
+        # relies on pbr.
+        self.version = __version__
         self.faucet_version = PromGauge( # pylint: disable=unexpected-keyword-arg
             'faucet_pbr_version',
             'Faucet PBR version',
