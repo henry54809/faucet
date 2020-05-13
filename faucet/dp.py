@@ -489,6 +489,7 @@ configuration.
                 included_tables.add('vip')
         if valve_cl.STATIC_TABLE_IDS:
             included_tables.add('port_acl')
+            self.has_acls = True
         if self.hairpin_ports:
             included_tables.add('eth_dst_hairpin')
         if self.use_classification:
@@ -763,10 +764,10 @@ configuration.
         return send_ports
 
     @staticmethod
-    def modify_stack_topology(graph, dp, port, add=True):
+    def modify_stack_topology(graph, dp, port, add=True):  # pylint: disable=invalid-name
         """Add/remove an edge to the stack graph which originates from this dp and port."""
 
-        def canonical_edge(dp, port):
+        def canonical_edge(dp, port):  # pylint: disable=invalid-name
             peer_dp = port.stack['dp']
             peer_port = port.stack['port']
             sort_edge_a = (
@@ -807,12 +808,12 @@ configuration.
         return edge_name
 
     @classmethod
-    def add_stack_link(cls, graph, dp, port):
+    def add_stack_link(cls, graph, dp, port):  # pylint: disable=invalid-name
         """Add a stack link to the stack graph."""
         return cls.modify_stack_topology(graph, dp, port)
 
     @classmethod
-    def remove_stack_link(cls, graph, dp, port):
+    def remove_stack_link(cls, graph, dp, port):  # pylint: disable=invalid-name
         """Remove a stack link to the stack graph."""
         return cls.modify_stack_topology(graph, dp, port, False)
 
@@ -829,7 +830,7 @@ configuration.
         if not self.stack_ports:
             return
 
-        for dp in stack_priority_dps:
+        for dp in stack_priority_dps:  # pylint: disable=invalid-name
             test_config_condition(not isinstance(dp.stack['priority'], int), (
                 'stack priority must be type %s not %s' % (
                     int, type(dp.stack['priority']))))
@@ -844,7 +845,7 @@ configuration.
                 self.stack_root_name = meta_dp_state.stack_root_name
 
         self.stack_route_learning = False
-        for dp in stack_port_dps:
+        for dp in stack_port_dps:  # pylint: disable=invalid-name
             # Must set externals flag for entire stack.
             if dp.has_externals:
                 self.has_externals = True
@@ -854,7 +855,7 @@ configuration.
 
         edge_count = Counter()
         graph = networkx.MultiGraph()
-        for dp in stack_port_dps:
+        for dp in stack_port_dps:  # pylint: disable=invalid-name
             graph.add_node(dp.name)
             for port in dp.stack_ports:
                 edge_name = self.add_stack_link(graph, dp, port)
@@ -865,7 +866,7 @@ configuration.
             if self.stack is None:
                 self.stack = {}
             self.stack_graph = graph
-            for dp in graph.nodes():
+            for dp in graph.nodes():  # pylint: disable=invalid-name
                 path_to_root_len = len(self.shortest_path(self.stack_root_name, src_dp=dp))
                 test_config_condition(
                     path_to_root_len == 0, '%s not connected to stack' % dp)
@@ -1079,7 +1080,7 @@ configuration.
                     test_config_condition(stack_dp not in dp_by_name, (
                         'stack DP %s not defined' % stack_dp))
                     port_stack_dp[port] = dp_by_name[stack_dp]
-                for port, dp in port_stack_dp.items():
+                for port, dp in port_stack_dp.items():  # pylint: disable=invalid-name
                     port.stack['dp'] = dp
                     stack_port = dp.resolve_port(port.stack['port'])
                     test_config_condition(stack_port is None, (
@@ -1333,6 +1334,12 @@ configuration.
             port for port in self.ports.values() if port.loop_protect_external}
         self.has_externals = bool(loop_protect_external_ports)
 
+        # Populate port.lacp_port_id if it wasn't set in config
+        for port in self.ports.values():
+            if port.lacp and port.lacp_port_id == -1:
+                dp_index = dps.index(self)
+                port.lacp_port_id = dp_index * 100 + port.number
+
         resolve_stack_dps()
         resolve_mirror_destinations()
         resolve_acls()
@@ -1550,6 +1557,16 @@ configuration.
                     changed_acl_ports.add(port_no)
                     logger.info('port %s ACL changed (ACL %s to %s)' % (
                         port_no, old_acl_ids, new_acl_ids))
+            # If any of the changed VLANs have tagged ports we will need to restore their flows,
+            # even if those tagged ports didn't change, as the delete VLAN operation uses
+            # a wildcard delete.
+            for port_no in same_ports:
+                old_port = self.ports[port_no]
+                new_port = new_dp.ports[port_no]
+                for tagged_vlan in new_port.tagged_vlans:
+                    if tagged_vlan.vid in changed_vlans:
+                        logger.info('port %s has a changed tagged VLAN' % port_no)
+                        changed_ports.add(port_no)
 
             if changed_acl_ports:
                 same_ports -= changed_acl_ports

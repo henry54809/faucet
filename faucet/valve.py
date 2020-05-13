@@ -31,11 +31,37 @@ from faucet import valve_switch
 from faucet import valve_table
 from faucet import valve_util
 from faucet import valve_pipeline
+from faucet.valve_manager_base import ValveManagerBase
 from faucet.valve_coprocessor import CoprocessorManager
 from faucet.valve_lldp import ValveLLDPManager
 from faucet.valve_outonly import OutputOnlyManager
 from faucet.valve_switch_stack import ValveSwitchStackManagerBase
-from faucet.vlan import NullVLAN
+
+
+# TODO: has to be here to avoid eventlet monkey patch in faucet_dot1x.
+class Dot1xManager(ValveManagerBase):
+
+    def __init__(self, dot1x, dp_id, dot1x_ports, nfv_sw_port):
+        self.dot1x = dot1x
+        self.dp_id = dp_id
+        self.dot1x_ports = dot1x_ports
+        self.nfv_sw_port = nfv_sw_port
+
+    def del_port(self, port):
+        ofmsgs = []
+        if port.dot1x:
+            ofmsgs.extend(self.dot1x.port_down(self.dp_id, port, self.nfv_sw_port))
+        return ofmsgs
+
+    def add_port(self, port):
+        ofmsgs = []
+        if port == self.nfv_sw_port:
+            ofmsgs.extend(self.dot1x.nfv_sw_port_up(
+                self.dp_id, self.dot1x_ports(), self.nfv_sw_port))
+        elif port.dot1x:
+            ofmsgs.extend(self.dot1x.port_up(
+                self.dp_id, port, self.nfv_sw_port))
+        return ofmsgs
 
 
 class ValveLogger:
@@ -77,7 +103,7 @@ class Valve:
 
     __slots__ = [
         '_coprocessor_manager',
-        '_nfv_sw_port',
+        '_dot1x_manager',
         '_last_advertise_sec',
         '_last_fast_advertise_sec',
         '_last_packet_in_sec',
@@ -138,6 +164,9 @@ class Valve:
         metrics_var = getattr(self.metrics, var)
         metrics_var.labels(**labels).set(val)
 
+    def _set_port_var(self, var, val, port):
+        self._set_var(var, val, labels=self.dp.port_labels(port.number))
+
     def _remove_var(self, var, labels=None):
         if labels is None:
             labels = self.dp.base_prom_labels()
@@ -179,9 +208,10 @@ class Valve:
             self.dp.tables['vlan'], self.dp.highest_priority)
         self._output_only_manager = OutputOnlyManager(
             self.dp.tables['vlan'], self.dp.highest_priority)
-        self._nfv_sw_port = None
+        self._dot1x_manager = None
         if self.dp.dot1x:
-            self._nfv_sw_port = self.dp.ports[self.dp.dot1x['nfv_sw_port']]
+            nfv_sw_port = self.dp.ports[self.dp.dot1x['nfv_sw_port']]
+            self._dot1x_manager = Dot1xManager(self.dot1x, self.dp.dp_id, self.dp.dot1x_ports, nfv_sw_port)
 
         self.pipeline = valve_pipeline.ValvePipeline(self.dp)
         self.switch_manager = valve_switch.valve_switch_factory(self.logger, self.dp, self.pipeline)
@@ -422,8 +452,7 @@ class Valve:
         port = self.dp.ports.get(port_no, None)
         if port is None:
             return
-        port_labels = self.dp.port_labels(port.number)
-        self._set_var('port_status', port_status, labels=port_labels)
+        self._set_port_var('port_status', port_status, port)
         port.dyn_update_time = now
 
     def port_status_handler(self, port_no, reason, state, _other_valves, now):
@@ -604,10 +633,7 @@ class Valve:
             next_state = self._next_stack_link_state(port, now)
             if next_state is not None:
                 next_state()
-                self._set_var(
-                    'port_stack_state',
-                    port.dyn_stack_current_state,
-                    labels=self.dp.port_labels(port.number))
+                self._set_port_var('port_stack_state', port.dyn_stack_current_state, port)
                 self.notify({'STACK_STATE': {
                     'port': port.number,
                     'state': port.dyn_stack_current_state
@@ -707,10 +733,7 @@ class Valve:
         return self._update_stack_link_state(self.dp.stack_ports, now, other_valves)
 
     def _reset_dp_status(self):
-        if self.dp.dyn_running:
-            self._set_var('dp_status', 1)
-        else:
-            self._set_var('dp_status', 0)
+        self._set_var('dp_status', int(self.dp.dyn_running))
 
     def datapath_connect(self, now, discovered_up_ports):
         """Handle Ryu datapath connection event and provision pipeline.
@@ -793,13 +816,8 @@ class Valve:
             for manager in self._managers:
                 ofmsgs.extend(manager.add_port(port))
 
-            if self.dp.dot1x:
-                if port == self._nfv_sw_port:
-                    ofmsgs.extend(self.dot1x.nfv_sw_port_up(
-                        self.dp.dp_id, self.dp.dot1x_ports(), self._nfv_sw_port))
-                elif port.dot1x:
-                    ofmsgs.extend(self.dot1x.port_up(
-                        self.dp.dp_id, port, self._nfv_sw_port))
+            if self._dot1x_manager:
+                ofmsgs.extend(self._dot1x_manager.add_port(port))
 
             if port.output_only:
                 continue
@@ -811,6 +829,7 @@ class Valve:
                 ofmsgs.extend(self.lacp_update(port, False))
                 if port.lacp_active:
                     ofmsgs.extend(self._lacp_actions(port.dyn_last_lacp_pkt, port))
+                self._set_port_var('lacp_port_id', port.lacp_port_id, port)
 
             if port.stack:
                 port_vlans = self.dp.vlans.values()
@@ -854,10 +873,10 @@ class Valve:
             if port.output_only:
                 continue
 
-            vlans_with_deleted_ports.update(set(port.vlans()))
+            if self._dot1x_manager:
+                ofmsgs.extend(self._dot1x_manager.del_port(port))
 
-            if port.dot1x:
-                ofmsgs.extend(self.dot1x.port_down(self.dp.dp_id, port, self._nfv_sw_port))
+            vlans_with_deleted_ports.update(set(port.vlans()))
 
             if port.lacp:
                 ofmsgs.extend(self.lacp_update(port, False, other_valves=other_valves))
@@ -875,9 +894,10 @@ class Valve:
 
     def _reset_lacp_status(self, port):
         lacp_state = port.actor_state()
-        self._set_var('port_lacp_state', lacp_state, labels=self.dp.port_labels(port.number))
+        lacp_role = port.lacp_port_state()
+        self._set_port_var('port_lacp_state', lacp_state, port)
         self.notify(
-            {'LAG_CHANGE': {'port_no': port.number, 'state': lacp_state}})
+            {'LAG_CHANGE': {'port_no': port.number, 'state': lacp_state, 'role': lacp_role}})
 
     def get_lacp_dpid_nomination(self, lacp_id, other_valves):
         """
@@ -944,7 +964,7 @@ class Valve:
             self.logger.info('LAG %u %s %s (previous state %s)' % (
                 port.lacp, port, port.port_role_name(new_state),
                 port.port_role_name(prev_state)))
-            self._set_var('port_lacp_role', new_state, labels=self.dp.port_labels(port.number))
+            self._set_port_var('port_lacp_role', new_state, port)
         return new_state != prev_state
 
     def lacp_update_actor_state(self, port, lacp_up, now=None, lacp_pkt=None, cold_start=False):
@@ -1059,7 +1079,7 @@ class Valve:
         if lacp_pkt:
             pkt = valve_packet.lacp_reqreply(
                 self.dp.faucet_dp_mac, self.dp.faucet_dp_mac,
-                port.lacp, port.number, port.lacp_port_priority,
+                port.lacp, port.lacp_port_id, port.lacp_port_priority,
                 actor_state_sync, actor_state_activity,
                 actor_state_col, actor_state_dist,
                 lacp_pkt.actor_system, lacp_pkt.actor_key, lacp_pkt.actor_port,
@@ -1075,7 +1095,7 @@ class Valve:
         else:
             pkt = valve_packet.lacp_reqreply(
                 self.dp.faucet_dp_mac, self.dp.faucet_dp_mac,
-                port.lacp, port.number, port.lacp_port_priority,
+                port.lacp, port.lacp_port_id, port.lacp_port_priority,
                 actor_state_synchronization=actor_state_sync,
                 actor_state_activity=actor_state_activity,
                 actor_state_collecting=actor_state_col,
@@ -1276,8 +1296,10 @@ class Valve:
                     pkt_meta.reparse_ip()
                 learn_log = 'L2 learned on %s %s (%u hosts total)' % (
                     learn_port, pkt_meta.log(), pkt_meta.vlan.hosts_count())
+                stack_descr = None
                 if pkt_meta.port.stack:
-                    learn_log += ' from %s' % pkt_meta.port.stack_descr()
+                    stack_descr = pkt_meta.port.stack_descr()
+                    learn_log += ' from %s' % stack_descr
                 previous_port_no = None
                 if previous_port is not None:
                     previous_port_no = previous_port.number
@@ -1289,16 +1311,18 @@ class Valve:
                 learn_labels = dict(self.dp.base_prom_labels(), vid=pkt_meta.vlan.vid,
                                     eth_src=pkt_meta.eth_src)
                 self._set_var('learned_l2_port', learn_port.number, labels=learn_labels)
-                self.notify(
-                    {'L2_LEARN': {
-                        'port_no': learn_port.number,
-                        'previous_port_no': previous_port_no,
-                        'vid': pkt_meta.vlan.vid,
-                        'eth_src': pkt_meta.eth_src,
-                        'eth_dst': pkt_meta.eth_dst,
-                        'eth_type': pkt_meta.eth_type,
-                        'l3_src_ip': str(pkt_meta.l3_src),
-                        'l3_dst_ip': str(pkt_meta.l3_dst)}})
+                l2_learn_msg = {
+                    'port_no': learn_port.number,
+                    'previous_port_no': previous_port_no,
+                    'vid': pkt_meta.vlan.vid,
+                    'eth_src': pkt_meta.eth_src,
+                    'eth_dst': pkt_meta.eth_dst,
+                    'eth_type': pkt_meta.eth_type,
+                    'l3_src_ip': str(pkt_meta.l3_src),
+                    'l3_dst_ip': str(pkt_meta.l3_dst)}
+                if stack_descr:
+                    l2_learn_msg.update({'stack_descr': stack_descr})
+                self.notify({'L2_LEARN': l2_learn_msg})
             return learn_flows
         return []
 
@@ -1433,11 +1457,10 @@ class Valve:
             return True
 
         def _update_port(vlan, port):
-            port_labels = self.dp.port_labels(port.number)
             port_vlan_labels = self._port_vlan_labels(port, vlan)
             port_vlan_hosts_learned = port.hosts_count(vlans=[vlan])
-            self._set_var(
-                'port_learn_bans', port.dyn_learn_ban_count, labels=port_labels)
+            self._set_port_var(
+                'port_learn_bans', port.dyn_learn_ban_count, port)
             self._set_var(
                 'port_vlan_hosts_learned', port_vlan_hosts_learned, labels=port_vlan_labels)
             highwater = self._port_highwater[vlan.vid][port.number]
