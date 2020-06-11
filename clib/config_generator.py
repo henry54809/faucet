@@ -16,8 +16,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import string
 import random
+import string
+
 import yaml
 
 from mininet.log import output
@@ -155,11 +156,14 @@ class FaucetTopoGenerator(Topo):
         if len(port_order) >= max_length:
             return port_order
         extend_order = []
+        order = port_order
         start_port = max(port_order) + 1
-        for i in port_order:
-            extend_order.append(start_port + i)
-            if len(port_order) + len(extend_order) >= max_length:
-                break
+        while len(port_order) + len(extend_order) < max_length:
+            for i in order:
+                extend_order.append(start_port + i)
+                if len(port_order) + len(extend_order) >= max_length:
+                    break
+            start_port = max(extend_order) + 1
         return port_order + extend_order
 
     def _generate_sid_prefix(self):
@@ -195,7 +199,7 @@ class FaucetTopoGenerator(Topo):
         if 'cls' in host_opts:
             host_name = 'e%s%1.1u' % (sid_prefix, host_index + 1)
         else:
-            if isinstance(vlans, int):
+            if isinstance(vlans, int) or vlans is None:
                 host_name = 'u%s%1.1u' % (sid_prefix, host_index + 1)
                 host_opts['cls'] = FaucetHost
             elif isinstance(vlans, list):
@@ -335,9 +339,9 @@ class FaucetTopoGenerator(Topo):
             host_options (dict): Host index map to additional mininet host options
         """
         # Additional test generation information
-        self.ovs_type = ovs_type
-        self.ports_sock = ports_sock
-        self.test_name = test_name
+        self.ovs_type = ovs_type  # pylint: disable=attribute-defined-outside-init
+        self.ports_sock = ports_sock  # pylint: disable=attribute-defined-outside-init
+        self.test_name = test_name  # pylint: disable=attribute-defined-outside-init
         self.get_serialno = get_serialno
 
         # Information for hardware switches
@@ -348,9 +352,9 @@ class FaucetTopoGenerator(Topo):
         self.host_options = host_options if host_options else {}
 
         # Generate a port order for all of the switches to use
-        max_ports = len(switch_links) + len(host_links)
+        max_ports = (len(switch_links) * 2) + len(host_links)
         self.start_port = start_port
-        self.port_order = self.extend_port_order(port_order, max_ports)
+        self.port_order = self.extend_port_order(port_order, max_length=max_ports)
 
         # Build the network topology
         self.add_switch_topology(switch_links, link_vlans)
@@ -381,7 +385,7 @@ class FaucetTopoGenerator(Topo):
                     'description': 'tagged %s' % link_name,
                     'tagged_vlans': [self.vlan_name(vlan) for vlan in vlans]
                 }
-            elif dst_node and dst_port and vlans is None:
+            elif dst_node and dst_port:
                 # Stack link
                 interface_config = {
                     'name': 'b%u' % src_port,
@@ -390,6 +394,13 @@ class FaucetTopoGenerator(Topo):
                         'dp': dst_node,
                         'port': dst_port
                     }
+                }
+            elif vlans is None:
+                # output only link
+                interface_config = {
+                    'name': 'b%u' % src_port,
+                    'description': 'output only %s' % link_name,
+                    'output_only': True,
                 }
             else:
                 raise GenerationError('Unknown %s link type %s' % (type_, vlans))
