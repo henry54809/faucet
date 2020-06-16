@@ -29,40 +29,21 @@ class ValveSwitchStackManagerBase(ValveSwitchManager):
     # By default, no reflection used for flooding algorithms.
     _USES_REFLECTION = False
 
-    def __init__(self, logger, ports, vlans,  # pylint: disable=too-many-arguments
-                 vlan_table, vlan_acl_table, eth_src_table, eth_dst_table, eth_dst_hairpin_table,
-                 flood_table, classification_table,
-                 pipeline,
-                 use_group_table, groups,
-                 combinatorial_port_flood, canonical_port_order,
-                 restricted_bcast_arpnd, has_externals,
-                 learn_ban_timeout, learn_timeout, learn_jitter, cache_update_guard_time, idle_dst,
-                 stack_ports, dp_shortest_path_to_root, shortest_path_port,
-                 is_stack_root, is_stack_root_candidate,
-                 is_stack_edge, graph):
-        super(ValveSwitchStackManagerBase, self).__init__(
-            logger, ports, vlans,
-            vlan_table, vlan_acl_table, eth_src_table, eth_dst_table, eth_dst_hairpin_table,
-            flood_table, classification_table,
-            pipeline,
-            use_group_table, groups,
-            combinatorial_port_flood,
-            canonical_port_order,
-            restricted_bcast_arpnd,
-            has_externals,
-            learn_ban_timeout,
-            learn_timeout,
-            learn_jitter,
-            cache_update_guard_time,
-            idle_dst)
+    def __init__(self, stack_ports, dp_shortest_path_to_root, shortest_path,
+                 shortest_path_port, is_stack_root, is_stack_root_candidate,
+                 is_stack_edge, dp_name, graph, tunnel_acls, acl_manager, **kwargs):
+        super(ValveSwitchStackManagerBase, self).__init__(**kwargs)
         self.stack_ports = stack_ports
-        self.canonical_port_order = canonical_port_order
-        self.shortest_path_port = shortest_path_port
         self.dp_shortest_path_to_root = dp_shortest_path_to_root
+        self.shortest_path = shortest_path
+        self.shortest_path_port = shortest_path_port
         self.is_stack_root = is_stack_root
         self.is_stack_root_candidate = is_stack_root_candidate
         self.is_stack_edge = is_stack_edge
         self.graph = graph
+        self.dp_name = dp_name
+        self.tunnel_acls = tunnel_acls
+        self.acl_manager = acl_manager
         self._set_ext_port_flag = ()
         self._set_nonext_port_flag = ()
         self.external_root_only = False
@@ -83,6 +64,94 @@ class ValveSwitchStackManagerBase(ValveSwitchManager):
             elif not port.stack:
                 external_forwarding_requested = True
         return external_forwarding_requested
+
+    def acl_update_tunnel(self, acl):
+        """Return ofmsgs for a ACL with a tunnel rule"""
+        ofmsgs = []
+        source_vids = defaultdict(list)
+        for _id, info in acl.tunnel_info.items():
+            dst_dp, dst_port = info['dst_dp'], info['dst_port']
+            # Update the tunnel rules for each tunnel action specified
+            updated_sources = []
+            for i, source in enumerate(acl.tunnel_sources):
+                # Update each tunnel rule for each tunnel source
+                src_dp = source['dp']
+                shortest_path = self.shortest_path(dst_dp, src_dp=src_dp)
+                if self.dp_name not in shortest_path:
+                    continue
+                out_port = None
+                # We are in the path, so we need to update
+                if self.dp_name == dst_dp:
+                    out_port = dst_port
+                if not out_port:
+                    out_port = self.shortest_path_port(dst_dp).number
+                updated = acl.update_source_tunnel_rules(
+                    self.dp_name, i, _id, out_port)
+                if updated:
+                    if self.dp_name == src_dp:
+                        source_vids[i].append(_id)
+                    else:
+                        updated_sources.append(i)
+            for source_id in updated_sources:
+                ofmsgs.extend(self.acl_manager.build_tunnel_rules_ofmsgs(
+                    source_id, _id, acl))
+        for source_id, vids in source_vids.items():
+            for vid in vids:
+                ofmsgs.extend(self.acl_manager.build_tunnel_acl_rule_ofmsgs(
+                    source_id, vid, acl))
+        return ofmsgs
+
+    def add_tunnel_acls(self):
+        ofmsgs = []
+        if self.tunnel_acls:
+            for acl in self.tunnel_acls:
+                ofmsgs.extend(self.acl_update_tunnel(acl))
+        return ofmsgs
+
+    def next_stack_link_state(self, port, now):
+        next_state = None
+
+        if port.is_stack_admin_down():
+            return next_state
+
+        last_seen_lldp_time = port.dyn_stack_probe_info.get('last_seen_lldp_time', None)
+        if last_seen_lldp_time is None:
+            if port.is_stack_none():
+                next_state = port.stack_init
+                self.logger.info('Stack %s new, state INIT' % port)
+            return next_state
+
+        remote_dp = port.stack['dp']
+        stack_correct = port.dyn_stack_probe_info.get(
+            'stack_correct', None)
+        send_interval = remote_dp.lldp_beacon.get(
+            'send_interval', remote_dp.DEFAULT_LLDP_SEND_INTERVAL)
+
+        time_since_lldp_seen = None
+        num_lost_lldp = None
+        stack_timed_out = True
+
+        if last_seen_lldp_time is not None:
+            time_since_lldp_seen = now - last_seen_lldp_time
+            num_lost_lldp = time_since_lldp_seen / send_interval
+            if num_lost_lldp < port.max_lldp_lost:
+                stack_timed_out = False
+
+        if stack_timed_out:
+            if not port.is_stack_gone():
+                next_state = port.stack_gone
+                self.logger.error(
+                    'Stack %s GONE, too many (%u) packets lost, last received %us ago' % (
+                        port, num_lost_lldp, time_since_lldp_seen))
+        elif not stack_correct:
+            if not port.is_stack_bad():
+                next_state = port.stack_bad
+                self.logger.error('Stack %s BAD, incorrect cabling' % port)
+        elif not port.is_stack_up():
+            next_state = port.stack_up
+            self.logger.info('Stack %s UP' % port)
+
+        return next_state
 
     def learn_host_intervlan_routing_flows(self, port, vlan, eth_src, eth_dst):
         """Returns flows for the eth_src_table that enable packets that have been
@@ -154,7 +223,7 @@ class ValveSwitchStackManagerBase(ValveSwitchManager):
                     first_peer_dp = first_peer_port.stack['dp'].name
                 self.towards_root_stack_ports = {
                     port for port in self.all_towards_root_stack_ports
-                    if port.stack['dp'].name == first_peer_dp}
+                    if port.stack['dp'].name == first_peer_dp}  # pytype: disable=attribute-error
             self.away_from_root_stack_ports = all_peer_ports - self.all_towards_root_stack_ports
             if self.towards_root_stack_ports:
                 self.logger.info(
@@ -200,11 +269,13 @@ class ValveSwitchStackManagerBase(ValveSwitchManager):
         return self.canonical_port_order([port for port in ports if port.is_stack_up()])
 
     def _build_mask_flood_rules(self, vlan, eth_type, eth_dst, eth_dst_mask,  # pylint: disable=too-many-arguments
-                                exclude_unicast, exclude_restricted_bcast_arpnd, command):
+                                exclude_unicast, exclude_restricted_bcast_arpnd,
+                                command, cold_start):
         # Stack ports aren't in VLANs, so need special rules to cause flooding from them.
         ofmsgs = super(ValveSwitchStackManagerBase, self)._build_mask_flood_rules(
             vlan, eth_type, eth_dst, eth_dst_mask,
-            exclude_unicast, exclude_restricted_bcast_arpnd, command)
+            exclude_unicast, exclude_restricted_bcast_arpnd,
+            command, cold_start)
         away_up_ports_by_dp = defaultdict(list)
         for port in self._canonical_stack_up_ports(self.away_from_root_stack_ports):
             away_up_ports_by_dp[port.stack['dp']].append(port)
@@ -371,7 +442,8 @@ class ValveSwitchStackManagerBase(ValveSwitchManager):
         """
         raise NotImplementedError
 
-    def _non_stack_learned(self, other_valves, pkt_meta):
+    @staticmethod
+    def _non_stack_learned(other_valves, pkt_meta):
         other_local_dp_entries = []
         other_external_dp_entries = []
         vlan_vid = pkt_meta.vlan.vid
@@ -473,6 +545,48 @@ class ValveSwitchStackManagerBase(ValveSwitchManager):
             for vlan in self.vlans.values():
                 vlan.clear_cache_hosts_on_port(port)
         return ofmsgs
+
+    def get_lacp_dpid_nomination(self, lacp_id, valve, other_valves):
+        """Chooses the DP for a given LAG.
+
+        The DP will be nominated by the following conditions in order:
+            1) Number of LAG ports
+            2) Root DP
+            3) Lowest DPID
+
+        Args:
+            lacp_id: The LACP LAG ID
+            other_valves (list): list of other valves
+        Returns:
+            nominated_dpid, reason
+        """
+        if not other_valves:
+            return None, ''
+        stacked_other_valves = valve._stacked_valves(other_valves)
+        all_stacked_valves = {valve}.union(stacked_other_valves)
+        ports = {}
+        root_dpid = None
+        for valve in all_stacked_valves:
+            all_lags = valve.dp.lags_up()
+            if lacp_id in all_lags:
+                ports[valve.dp.dp_id] = len(all_lags[lacp_id])
+            if valve.dp.is_stack_root():
+                root_dpid = valve.dp.dp_id
+        # Order by number of ports
+        port_order = sorted(ports, key=ports.get, reverse=True)
+        if not port_order:
+            return None, ''
+        most_ports_dpid = port_order[0]
+        most_ports_dpids = [dpid for dpid, num in ports.items() if num == ports[most_ports_dpid]]
+        if len(most_ports_dpids) > 1:
+            # There are several dpids that have the same number of lags
+            if root_dpid in most_ports_dpids:
+                # root_dpid is the chosen DPID
+                return root_dpid, 'root dp'
+            # Order by lowest DPID
+            return sorted(most_ports_dpids), 'lowest dpid'
+        # Most_ports_dpid is the chosen DPID
+        return most_ports_dpid, 'most LAG ports'
 
 
 class ValveSwitchStackManagerNoReflection(ValveSwitchStackManagerBase):

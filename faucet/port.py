@@ -328,7 +328,7 @@ class Port(Conf):
             for key, default_val in self.defaults.items():
                 if key in vlan_agnostic_options or key in non_vlan_port_options:
                     continue
-                if key.startswith('acl') and self.stack:
+                if key.startswith('acl') and (self.stack or self.coprocessor):
                     continue
                 val = getattr(self, key)
                 test_config_condition(
@@ -409,7 +409,7 @@ class Port(Conf):
             self.acl_in and self.acls_in,
             'Found both acl_in and acls_in, use only acls_in')
         if self.acl_in and not isinstance(self.acl_in, list):
-            self.acls_in = [self.acl_in,]
+            self.acls_in = [self.acl_in]
             self.acl_in = None
         if self.acls_in:
             for acl in self.acls_in:
