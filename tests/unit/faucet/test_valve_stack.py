@@ -116,8 +116,8 @@ dps:
         lacp_ports[0x1][0].actor_nosync()
         nominated_dpid = valve.switch_manager.get_lacp_dpid_nomination(1, valve, other_valves)[0]
         self.assertEqual(
-            nominated_dpid, 0x2,
-            'Expected nominated DPID %s but found %s' % (0x2, nominated_dpid))
+            nominated_dpid, 0x1,
+            'Expected nominated DPID %s but found %s' % (0x1, nominated_dpid))
 
     def test_no_dpid_nominations(self):
         """Test dpid nomination doesn't nominate when no LACP ports are up"""
