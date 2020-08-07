@@ -1,5 +1,5 @@
 chewie==0.0.21
-eventlet==0.25.1
+eventlet>=0.25.1
 influxdb
 msgpack>=0.4.6,<1.0.0
 networkx
