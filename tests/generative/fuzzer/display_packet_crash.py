@@ -6,7 +6,6 @@
 import sys
 from ryu.controller import dpset
 from faucet import faucet
-from faucet import faucet_experimental_api
 import fake_packet
 
 
@@ -17,9 +16,7 @@ def main():
         packet_data = str(pkt.read())
 
     # start faucet
-    application = faucet.Faucet(
-        dpset=dpset.DPSet(),
-        faucet_experimental_api=faucet_experimental_api.FaucetExperimentalAPI())
+    application = faucet.Faucet(dpset=dpset.DPSet())
     application.start()
 
     # make sure dps are running
@@ -52,4 +49,4 @@ if __name__ == "__main__":
     if len(sys.argv) == 2:
         main()
     else:
-        print('USAGE: python3 display_packet_crash.py <AFL_CRASH_FILE>')
+        sys.stderr.write('USAGE: python3 display_packet_crash.py <AFL_CRASH_FILE>\n')

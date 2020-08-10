@@ -27,7 +27,7 @@ from faucet.vlan import NullVLAN
 from faucet import valve_table
 
 
-class ValveSwitchManager(ValveManagerBase):
+class ValveSwitchManager(ValveManagerBase):  # pylint: disable=too-many-public-methods
     """Implement dataplane based flooding/learning for standalone dataplanes."""
 
     # Enumerate possible eth_dst flood destinations.
@@ -155,7 +155,7 @@ class ValveSwitchManager(ValveManagerBase):
         return self.flood_table.flowmod(
             match=match,
             command=command,
-            inst=[valve_of.apply_actions(flood_acts)],
+            inst=(valve_of.apply_actions(flood_acts),),
             priority=flood_priority)
 
     @functools.lru_cache(maxsize=1024)
@@ -309,7 +309,7 @@ class ValveSwitchManager(ValveManagerBase):
             ofmsgs.append(self.flood_table.flowmod(
                 match=match,
                 command=command,
-                inst=[valve_of.apply_actions([valve_of.group_act(group.group_id)])],
+                inst=(valve_of.apply_actions((valve_of.group_act(group.group_id),)),),
                 priority=flood_priority))
         return ofmsgs
 
@@ -318,7 +318,7 @@ class ValveSwitchManager(ValveManagerBase):
         ofmsgs.append(self.eth_src_table.flowcontroller(
             match=self.eth_src_table.match(vlan=vlan),
             priority=self.low_priority,
-            inst=[self.eth_src_table.goto(self.output_table)]))
+            inst=(self.eth_src_table.goto(self.output_table),)))
         ofmsgs.extend(self._build_flood_rules(vlan, cold_start))
         return ofmsgs
 
@@ -346,9 +346,9 @@ class ValveSwitchManager(ValveManagerBase):
                 actions.append(self.vlan_table.set_no_external_forwarding_requested())
             else:
                 actions.append(self.vlan_table.set_external_forwarding_requested())
-        inst = [
+        inst = (
             valve_of.apply_actions(actions),
-            self.vlan_table.goto(self._find_forwarding_table(vlan))]
+            self.vlan_table.goto(self._find_forwarding_table(vlan)))
         return self.vlan_table.flowmod(
             self.vlan_table.match(in_port=port.number, vlan=match_vlan),
             priority=self.low_priority, inst=inst)
@@ -559,10 +559,7 @@ class ValveSwitchManager(ValveManagerBase):
             in_port=port.number, vlan=vlan, eth_src=eth_src)
         src_priority = self.host_priority - 1
 
-        inst = []
-
-        inst.append(self.eth_src_table.goto(self.output_table))
-
+        inst = (self.eth_src_table.goto(self.output_table),)
         ofmsgs.append(self.eth_src_table.flowmod(
             match=src_match,
             priority=src_priority,
@@ -820,9 +817,9 @@ class ValveSwitchManager(ValveManagerBase):
                 actor_state_collecting=actor_state_col,
                 actor_state_distributing=actor_state_dist)
         self.logger.debug('Sending LACP %s on %s activity %s' % (pkt, port, actor_state_activity))
-        return [valve_of.packetout(port.number, pkt.data)]
+        return [valve_of.packetout(port.number, bytes(pkt.data))]
 
-    def get_lacp_dpid_nomination(self, lacp_id, valve, other_valves):
+    def get_lacp_dpid_nomination(self, lacp_id, valve, other_valves):  # pylint: disable=unused-argument
         """Chooses the DP for a given LAG.
 
         The DP will be nominated by the following conditions in order:
@@ -908,6 +905,13 @@ class ValveSwitchManager(ValveManagerBase):
                                 pkt_meta.port, actor_system,
                                 other_lag_port, other_actor_system))
         return ofmsgs_by_valve
+
+    def learn_host_from_pkt(self, valve, now, pkt_meta, other_valves):
+        """Learn host from packet."""
+        ofmsgs = []
+        ofmsgs.extend(valve.learn_host(now, pkt_meta, other_valves))
+        ofmsgs.extend(valve.router_rcv_packet(now, pkt_meta))
+        return {valve: ofmsgs}
 
 
 class ValveSwitchFlowRemovedManager(ValveSwitchManager):

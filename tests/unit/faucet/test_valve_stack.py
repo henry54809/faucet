@@ -39,6 +39,108 @@ from clib.valve_test_lib import (
 import networkx
 
 
+class ValveEdgeVLANTestCase(ValveTestBases.ValveTestNetwork):
+
+    CONFIG1 = """
+dps:
+    s1:
+        dp_id: 1
+        hardware: 'GenericTFM'
+        stack:
+            priority: 1
+        interfaces:
+            1:
+                stack:
+                    dp: s2
+                    port: 1
+    s2:
+        dp_id: 2
+        hardware: 'GenericTFM'
+        interfaces:
+            1:
+                stack:
+                    dp: s1
+                    port: 1
+            2:
+                stack:
+                    dp: s3
+                    port: 1
+    s3:
+        dp_id: 3
+        hardware: 'GenericTFM'
+        interfaces:
+            1:
+                stack:
+                    dp: s2
+                    port: 2
+    """
+    CONFIG2 = """
+dps:
+    s1:
+        dp_id: 1
+        hardware: 'GenericTFM'
+        stack:
+            priority: 1
+        interfaces:
+            1:
+                stack:
+                    dp: s2
+                    port: 1
+    s2:
+        dp_id: 2
+        hardware: 'GenericTFM'
+        interfaces:
+            1:
+                stack:
+                    dp: s1
+                    port: 1
+            2:
+                stack:
+                    dp: s3
+                    port: 1
+    s3:
+        dp_id: 3
+        hardware: 'GenericTFM'
+        interfaces:
+            1:
+                stack:
+                    dp: s2
+                    port: 2
+            2:
+                native_vlan: 100
+            3:
+                native_vlan: 100
+    """
+
+    def setUp(self):
+        self.setup_valves(self.CONFIG1)
+        self.activate_stack()
+
+    def activate_stack(self):
+        self.activate_all_ports()
+        for valve in self.valves_manager.valves.values():
+            for port in valve.dp.ports.values():
+                if port.stack:
+                    self.set_stack_port_up(port.number, valve)
+
+    def test_edge_vlan(self):
+        self.update_config(self.CONFIG2, reload_type=None)
+        self.activate_stack()
+        s1 = self.valves_manager.valves[1].dp
+        self.assertTrue(s1.is_stack_root())
+        self.assertFalse(s1.is_stack_edge())
+        s2 = self.valves_manager.valves[2].dp
+        self.assertFalse(s2.is_stack_root())
+        self.assertFalse(s2.is_stack_edge())
+        s3 = self.valves_manager.valves[3].dp
+        self.assertFalse(s3.is_stack_root())
+        self.assertTrue(s3.is_stack_edge())
+        match = {'in_port': 2, 'vlan_vid': 0, 'eth_src': self.P2_V100_MAC}
+        self.network.tables[3].is_output(match, port=3)
+        match = {'in_port': 3, 'vlan_vid': 0, 'eth_src': self.P2_V100_MAC}
+        self.network.tables[3].is_output(match, port=2)
+
+
 class ValveStackMCLAGTestCase(ValveTestBases.ValveTestNetwork):
     """Test stacked MCLAG"""
 
@@ -152,8 +254,7 @@ dps:
         for valve, ports in lacp_ports.items():
             other_valves = self.get_other_valves(valve)
             for port in ports:
-                valve.switch_manager.lacp_update_port_selection_state(port, valve, other_valves)
-                valve._reset_lacp_status(port)
+                valve.lacp_update(port, True, 1, 1, other_valves)
                 # Testing accuracy of varz port_lacp_role
                 port_labels = {
                     'port': port.name,
@@ -928,6 +1029,24 @@ class ValveRootStackTestCase(ValveTestBases.ValveTestNetwork):
                 'eth_src': self.P1_V300_MAC
             }]
         self.verify_flooding(matches)
+
+    def test_stack_off_on(self):
+        SIMPLE_DP_CONFIG = """
+        dps:
+            s3:
+                dp_id: 3
+                hardware: Open vSwitch
+                interfaces:
+                    1:
+                        native_vlan: 100
+        """
+        self.update_config(SIMPLE_DP_CONFIG, reload_expected=True)
+        dp = self.valves_manager.valves[self.DP_ID].dp
+        self.assertFalse(dp.is_stack_root())
+        self.update_config(CONFIG, reload_expected=True)
+        self.set_stack_port_up(5)
+        dp = self.valves_manager.valves[self.DP_ID].dp
+        self.assertTrue(dp.is_stack_root())
 
     def test_topo(self):
         """Test DP is assigned appropriate edge/root states"""
@@ -2413,7 +2532,7 @@ dps:
         global_flowmod = valve_of.flowmod(
             0, ofp.OFPFC_DELETE, ofp.OFPTT_ALL,
             0, ofp.OFPP_CONTROLLER, ofp.OFPP_CONTROLLER,
-            valve_of.match_from_dict({}), [], 0, 0, 0)
+            valve_of.match_from_dict({}), (), 0, 0, 0)
         self.check_groupmods_exist(
             valve_of.valve_flowreorder(ofmsgs + [global_flowmod]))
         global_metermod = valve_of.meterdel()

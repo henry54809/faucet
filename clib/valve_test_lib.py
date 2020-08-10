@@ -833,7 +833,7 @@ class ValveTestBases:
             connect_msgs = (
                 valve.switch_features(None) +
                 valve.datapath_connect(self.mock_time(10), discovered_up_ports))
-            self.apply_ofmsgs(connect_msgs, dp_id)
+            connect_msgs = self.apply_ofmsgs(connect_msgs, dp_id)
             self.valves_manager.update_config_applied(sent={dp_id: True})
             self.assertEqual(1, int(self.get_prom('dp_status', dp_id=dp_id)))
             self.assertTrue(valve.dp.to_conf())
@@ -1164,8 +1164,7 @@ class ValveTestBases:
             valve.switch_manager.update_stack_topo(True, valve.dp, port)
             for valve_vlan in valve.dp.vlans.values():
                 ofmsgs = valve.switch_manager.add_vlan(valve_vlan, cold_start=False)
-                if valve is self.valves_manager.valves[self.DP_ID]:
-                    self.apply_ofmsgs(ofmsgs, dp_id=self.DP_ID)
+                self.apply_ofmsgs(ofmsgs, dp_id=valve.dp.dp_id)
 
         def set_stack_port_up(self, port_no, valve=None):
             """Set stack port up recalculating topology as necessary."""
@@ -2334,17 +2333,6 @@ meters:
                 serial_num=b'99',
                 dp_desc=b'test_dp_desc')
             valve.ofdescstats_handler(invalid_body)
-
-        def test_get_config_dict(self):
-            """Test API call for DP config."""
-            valve = self.valves_manager.valves[self.DP_ID]
-            config_dict = valve.get_config_dict()
-            self.assertIn('dps', config_dict)
-            self.assertIn(valve.dp.name, config_dict['dps'])
-            self.assertEqual(len(config_dict['dps']), 1)
-            self.assertIn('vlans', config_dict)
-            self.assertIn('acls', config_dict)
-            self.assertTrue(valve.dp.get_tables())
 
         def test_dp_disconnect_cleanup(self):
             """Test port varz cleanup post dp disconnect"""
