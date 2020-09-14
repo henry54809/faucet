@@ -142,7 +142,7 @@ dps:
     def test_delete_permanent_learn(self):
         """Test port permanent learn can deconfigured."""
         table = self.network.tables[self.DP_ID]
-        before_table_state = str(table)
+        before_table_state = table.table_state()
         self.rcv_packet(2, 0x200, {
             'eth_src': self.P2_V200_MAC,
             'eth_dst': self.P3_V200_MAC,
@@ -858,8 +858,9 @@ dps:
             cache_info = valve_of.output_non_output_actions.cache_info()
             self.assertGreater(cache_info.hits, cache_info.misses, msg=cache_info)
             total_tt_prop = pstats_out.total_tt / self.baseline_total_tt  # pytype: disable=attribute-error
-            # must not be 15x slower, to ingest config for 100 interfaces than 1.
-            if total_tt_prop < 15:
+            # must not be 20x slower, to ingest config for 100 interfaces than 1.
+            # TODO: marginal on GitHub actions due to parallel test runs. This test might have to be run separately.
+            if total_tt_prop < 20:
                 for valve in self.valves_manager.valves.values():
                     for table in valve.dp.tables.values():
                         cache_info = table._trim_inst.cache_info()
@@ -868,6 +869,34 @@ dps:
             time.sleep(i)
 
         self.fail('%f: %s' % (total_tt_prop, pstats_text))
+
+
+class ValveTestVLANRef(ValveTestBases.ValveTestNetwork):
+
+    CONFIG = """
+dps:
+    s1:
+%s
+        interfaces:
+            p1:
+                number: 1
+                native_vlan: 333
+            p2:
+                number: 2
+                native_vlan: threes
+vlans:
+    threes:
+        vid: 333
+""" % DP1_CONFIG
+
+    def setUp(self):
+        self.setup_valves(self.CONFIG)
+
+    def test_vlan_refs(self):
+        vlans = self.valves_manager.valves[self.DP_ID].dp.vlans
+        self.assertEqual(1, len(vlans))
+        self.assertEqual('threes', vlans[333].name, vlans[333])
+        self.assertEqual(2, len(vlans[333].untagged))
 
 
 class ValveTestConfigHash(ValveTestBases.ValveTestNetwork):

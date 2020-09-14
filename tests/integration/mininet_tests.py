@@ -1512,6 +1512,44 @@ class FaucetUntaggedLLDPTest(FaucetUntaggedTest):
                 msg='%s: %s' % (lldp_required, tcpdump_txt))
 
 
+class FaucetLLDPIntervalTest(FaucetUntaggedTest):
+
+    CONFIG = """
+        lldp_beacon:
+            send_interval: 10
+            max_per_interval: 5
+        interfaces:
+            %(port_1)d:
+                native_vlan: 100
+                lldp_beacon:
+                    enable: True
+                    system_name: "faucet"
+                    port_descr: "first_port"
+                    org_tlvs:
+                        - {oui: 0x12bb, subtype: 2, info: "01406500"}
+            %(port_2)d:
+                native_vlan: 100
+            %(port_3)d:
+                native_vlan: 100
+            %(port_4)d:
+                native_vlan: 100
+"""
+
+    def test_untagged(self):
+        first_host = self.hosts_name_ordered()[0]
+        tcpdump_filter = 'ether proto 0x88cc'
+        interval = 10
+        timeout = interval * 3
+        tcpdump_txt = self.tcpdump_helper(
+            first_host, tcpdump_filter, [
+                lambda: first_host.cmd('sleep %u' % timeout)],
+            # output epoch secs
+            timeout=timeout, vflags='-tt', packets=2)
+        timestamps = re.findall(r'(\d+)\.\d+ [0-9a-f:]+ \> [0-9a-f:]+', tcpdump_txt)
+        timestamps = [int(timestamp) for timestamp in timestamps]
+        self.assertTrue(timestamps[1] - timestamps[0] >= interval, msg=tcpdump_txt)
+
+
 class FaucetUntaggedLLDPDefaultFallbackTest(FaucetUntaggedTest):
 
     CONFIG = """
@@ -3347,8 +3385,8 @@ class FaucetDeleteConfigReloadTest(FaucetConfigReloadTestBase):
         del conf['dps'][self.DP_NAME]['interfaces']
         conf['dps'][self.DP_NAME]['interfaces'] = {
             int(self.port_map['port_1']): {
-                'native_vlan': '100',
-                'tagged_vlans': ['200'],
+                'native_vlan': 100,
+                'tagged_vlans': [200],
             }
         }
         self.reload_conf(
@@ -3362,7 +3400,7 @@ class FaucetRouterConfigReloadTest(FaucetConfigReloadTestBase):
         conf = self._get_faucet_conf()
         conf['routers'] = {
             'router-1': {
-                'vlans': ['100', '200'],
+                'vlans': [100, 200],
             }
         }
         self.reload_conf(

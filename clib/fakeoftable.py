@@ -123,9 +123,9 @@ class FakeOFNetwork:
         for dp_id in self.valves_manager.valves:
             self.tables[dp_id] = FakeOFTable(dp_id, num_tables, requires_tfm)
 
-    def apply_ofmsgs(self, dp_id, ofmsgs):
+    def apply_ofmsgs(self, dp_id, ofmsgs, ignore_errors=False):
         """Applies ofmsgs to a FakeOFTable for DP ID"""
-        self.tables[dp_id].apply_ofmsgs(ofmsgs)
+        self.tables[dp_id].apply_ofmsgs(ofmsgs, ignore_errors=ignore_errors)
 
     def print_table(self, dp_id):
         """Prints the table in string format to STDERR"""
@@ -137,7 +137,12 @@ class FakeOFNetwork:
         """Returns the length of the shortest path from the source to the destination"""
         src_valve = self.valves_manager.valves[src_dpid]
         dst_valve = self.valves_manager.valves[dst_dpid]
-        return len(src_valve.dp.shortest_path(dst_valve.dp.name))
+        if src_valve == dst_valve:
+            return 1
+        elif src_valve.dp.stack and dst_valve.dp.stack:
+            return len(src_valve.dp.stack.shortest_path(dst_valve.dp.name))
+        else:
+            return 2
 
     def is_output(self, match, src_dpid, dst_dpid, port=None, vid=None, trace=False):
         """
@@ -216,6 +221,14 @@ class FakeOFNetwork:
                 sys.stderr.write('\n')
         return found
 
+    def table_state(self, dp_id):
+        """Return tuple of table hash & table str"""
+        return self.tables[dp_id].table_state()
+
+    def hash_table(self, dp_id):
+        """Return a hash of a single FakeOFTable"""
+        return self.tables[dp_id].__hash__()
+
 
 class FakeOFTable:
     """Fake OFTable is a virtual openflow pipeline used for testing openflow
@@ -231,6 +244,15 @@ class FakeOFTable:
         self.groups = {}
         self.requires_tfm = requires_tfm
         self.tfm = {}
+
+    def table_state(self):
+        """Return tuple of table hash & table str"""
+        table_str = str(self.tables)
+        return (hash(frozenset(table_str)), table_str)
+
+    def __hash__(self):
+        """Return a host of the tables"""
+        return hash(frozenset(str(self.tables)))
 
     def _apply_groupmod(self, ofmsg):
         """Maintain group table."""
@@ -382,37 +404,42 @@ class FakeOFTable:
                 self.tables.append([])
             self.tables[stat.table_id].append(FlowMod(stat))
 
-    def apply_ofmsgs(self, ofmsgs):
+    def apply_ofmsgs(self, ofmsgs, ignore_errors=False):
         """Update state of test flow tables."""
         for ofmsg in ofmsgs:
-            if isinstance(ofmsg, parser.OFPBarrierRequest):
-                continue
-            if isinstance(ofmsg, parser.OFPPacketOut):
-                continue
-            if isinstance(ofmsg, parser.OFPSetConfig):
-                continue
-            if isinstance(ofmsg, parser.OFPSetAsync):
-                continue
-            if isinstance(ofmsg, parser.OFPDescStatsRequest):
-                continue
-            if isinstance(ofmsg, parser.OFPMeterMod):
-                # TODO: handle OFPMeterMod
-                continue
-            if isinstance(ofmsg, parser.OFPTableFeaturesStatsRequest):
-                self._apply_tfm(ofmsg)
-                continue
-            if isinstance(ofmsg, parser.OFPGroupMod):
-                self._apply_groupmod(ofmsg)
-                continue
-            if isinstance(ofmsg, parser.OFPFlowMod):
-                self._apply_flowmod(ofmsg)
-                self.sort_tables()
-                continue
-            if isinstance(ofmsg, parser.OFPFlowStatsReply):
-                self._apply_flowstats(ofmsg)
-                self.sort_tables()
-                continue
-            raise FakeOFTableException('Unsupported flow %s' % str(ofmsg))
+            try:
+                if isinstance(ofmsg, parser.OFPBarrierRequest):
+                    continue
+                if isinstance(ofmsg, parser.OFPPacketOut):
+                    continue
+                if isinstance(ofmsg, parser.OFPSetConfig):
+                    continue
+                if isinstance(ofmsg, parser.OFPSetAsync):
+                    continue
+                if isinstance(ofmsg, parser.OFPDescStatsRequest):
+                    continue
+                if isinstance(ofmsg, parser.OFPMeterMod):
+                    # TODO: handle OFPMeterMod
+                    continue
+                if isinstance(ofmsg, parser.OFPTableFeaturesStatsRequest):
+                    self._apply_tfm(ofmsg)
+                    continue
+                if isinstance(ofmsg, parser.OFPGroupMod):
+                    self._apply_groupmod(ofmsg)
+                    continue
+                if isinstance(ofmsg, parser.OFPFlowMod):
+                    self._apply_flowmod(ofmsg)
+                    self.sort_tables()
+                    continue
+                if isinstance(ofmsg, parser.OFPFlowStatsReply):
+                    self._apply_flowstats(ofmsg)
+                    self.sort_tables()
+                    continue
+            except FakeOFTableException:
+                if not ignore_errors:
+                    raise
+            if not ignore_errors:
+                raise FakeOFTableException('Unsupported flow %s' % str(ofmsg))
 
     def single_table_lookup(self, match, table_id, trace=False):
         """
@@ -1020,7 +1047,7 @@ class FlowMod:
             name = 'output'
             if action.port == CONTROLLER_PORT:
                 value = 'CONTROLLER'
-            if action.port == IN_PORT:
+            elif action.port == IN_PORT:
                 value = 'IN_PORT'
             else:
                 value = str(action.port)

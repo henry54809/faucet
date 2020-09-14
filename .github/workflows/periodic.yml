@@ -1,4 +1,4 @@
-name: Faucet scheduled tests
+name: Periodic tests
 
 on:
   schedule:
@@ -8,10 +8,9 @@ on:
 
 env:
   FAUCET_TEST_IMG: "faucet/tests"
-  SHARDARGS: "--privileged --sysctl net.ipv6.conf.all.disable_ipv6=0 --ulimit core=99999999999:99999999999 -v /var/local/lib/docker:/var/lib/docker"
+  SHARDARGS: "--privileged --sysctl net.ipv6.conf.all.disable_ipv6=0 --ulimit core=99999999999:99999999999 -v /var/local/lib/docker:/var/lib/docker -v /var/tmp:/var/tmp"
 
 jobs:
-
   generative-testing:
     name: Generative tests
     runs-on: ubuntu-latest
@@ -19,8 +18,8 @@ jobs:
       matrix:
         MATRIX_SHARD: [--generative_unit, --generative_integration]
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v2.3.1
+      - name: Checkout repo
+        uses: actions/checkout@v2
       - name: Setup docker test requirements
         run: |
           ulimit -c unlimited
@@ -30,6 +29,6 @@ jobs:
       - name: Build docker
         run: docker build --pull -t ${FAUCET_TEST_IMG} -f Dockerfile.tests . || exit 1
       - name: Run docker
-        run: sudo docker run ${SHARDARGS} -v $HOME/.cache/pip:/var/tmp/pip-cache -e FAUCET_TESTS="${{ matrix.MATRIX_SHARD }}" -t ${FAUCET_TEST_IMG} || exit 1
+        run: sudo docker run ${SHARDARGS} -e FAUCET_TESTS="${{ matrix.MATRIX_SHARD }}" -t ${FAUCET_TEST_IMG} || exit 1
       - name: Detect core dumps
         run: if [ ls -1 /var/tmp/core* > /dev/null 2>&1 ]; then exit 1; fi
