@@ -12,6 +12,7 @@
 * Cleanup stale placements in faucetizer when restoring learned MACs (#166)
 * Forch, Gauge inside faucet container (#164)
 * Add gRPC interface to receive device testing results (#159)
+* Add grpc dependancy (#180)
 ## Faucet 1.9.48.2
 * Flush varz and trigger expire event when vlan host caches get cleared
 * WSAPI port changes to allow serving on 8080
