@@ -142,7 +142,7 @@ dps:
     def test_delete_permanent_learn(self):
         """Test port permanent learn can deconfigured."""
         table = self.network.tables[self.DP_ID]
-        before_table_state = str(table)
+        before_table_state = table.table_state()
         self.rcv_packet(2, 0x200, {
             'eth_src': self.P2_V200_MAC,
             'eth_dst': self.P3_V200_MAC,
@@ -194,6 +194,54 @@ dps:
         self.update_and_revert_config(self.CONFIG, self.LESS_CONFIG, 'cold')
 
 
+class ValveAddPortMirrorNoDelVLANTestCase(ValveTestBases.ValveTestNetwork):
+    """Test addition of port mirroring does not cause a del VLAN."""
+
+    CONFIG = """
+dps:
+    s1:
+%s
+        interfaces:
+            p1:
+                number: 1
+                tagged_vlans: [0x100]
+            p2:
+                number: 2
+                tagged_vlans: [0x100]
+            p3:
+                number: 3
+                output_only: true
+""" % DP1_CONFIG
+
+    MORE_CONFIG = """
+dps:
+    s1:
+%s
+        interfaces:
+            p1:
+                number: 1
+                tagged_vlans: [0x100]
+            p2:
+                number: 2
+                tagged_vlans: [0x100]
+            p3:
+                number: 3
+                output_only: true
+                mirror: [1]
+""" % DP1_CONFIG
+
+    def setUp(self):
+        self.setup_valves(self.CONFIG)[self.DP_ID]
+
+    def test_port_mirror(self):
+        """Test addition of port mirroring does not cause a del VLAN."""
+        reload_ofmsgs = self.update_config(self.MORE_CONFIG, reload_type='warm')[self.DP_ID]
+        for ofmsg in reload_ofmsgs:
+            if valve_of.is_flowdel(ofmsg):
+                if ofmsg.table_id == valve_of.ofp.OFPTT_ALL and ofmsg.match:
+                    self.assertNotIn('vlan_vid', ofmsg.match, ofmsg)
+
+
 class ValveAddPortTestCase(ValveTestBases.ValveTestNetwork):
     """Test addition of a port."""
 
@@ -226,7 +274,8 @@ dps:
                 tagged_vlans: [0x100]
 """ % DP1_CONFIG
 
-    def _inport_flows(self, in_port, ofmsgs):
+    @staticmethod
+    def _inport_flows(in_port, ofmsgs):
         return [
             ofmsg for ofmsg in ValveTestBases.flowmods_from_flows(ofmsgs)
             if ofmsg.match.get('in_port') == in_port]
@@ -858,12 +907,47 @@ dps:
             cache_info = valve_of.output_non_output_actions.cache_info()
             self.assertGreater(cache_info.hits, cache_info.misses, msg=cache_info)
             total_tt_prop = pstats_out.total_tt / self.baseline_total_tt  # pytype: disable=attribute-error
-            # must not be 15x slower, to ingest config for 100 interfaces than 1.
-            if total_tt_prop < 15:
+            # must not be 20x slower, to ingest config for 100 interfaces than 1.
+            # TODO: marginal on GitHub actions due to parallel test runs. This test might have to be run separately.
+            if total_tt_prop < 20:
+                for valve in self.valves_manager.valves.values():
+                    for table in valve.dp.tables.values():
+                        cache_info = table._trim_inst.cache_info()
+                        self.assertGreater(cache_info.hits, cache_info.misses, msg=cache_info)
                 return
             time.sleep(i)
 
         self.fail('%f: %s' % (total_tt_prop, pstats_text))
+
+
+class ValveTestVLANRef(ValveTestBases.ValveTestNetwork):
+    """Test reference to same VLAN by name or VID."""
+
+    CONFIG = """
+dps:
+    s1:
+%s
+        interfaces:
+            p1:
+                number: 1
+                native_vlan: 333
+            p2:
+                number: 2
+                native_vlan: threes
+vlans:
+    threes:
+        vid: 333
+""" % DP1_CONFIG
+
+    def setUp(self):
+        self.setup_valves(self.CONFIG)
+
+    def test_vlan_refs(self):
+        """Test same VLAN is referred to."""
+        vlans = self.valves_manager.valves[self.DP_ID].dp.vlans
+        self.assertEqual(1, len(vlans))
+        self.assertEqual('threes', vlans[333].name, vlans[333])
+        self.assertEqual(2, len(vlans[333].untagged))
 
 
 class ValveTestConfigHash(ValveTestBases.ValveTestNetwork):
@@ -1077,7 +1161,7 @@ class ValveReloadConfigTestCase(ValveTestBases.ValveTestBig):
     """Repeats the tests after a config reload."""
 
     def setUp(self):
-        super(ValveReloadConfigTestCase, self).setUp()
+        super().setUp()
         self.flap_port(1)
         self.update_config(CONFIG, reload_type='warm', reload_expected=False)
 

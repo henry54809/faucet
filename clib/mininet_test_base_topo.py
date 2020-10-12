@@ -19,6 +19,9 @@ class FaucetTopoTestBase(FaucetTestBase):
     Extension to the base test for the integration test suite to help set up arbitrary topologies
     """
 
+    NUM_FAUCET_CONTROLLERS = 2
+    NUM_GAUGE_CONTROLLERS = 1
+
     NETPREFIX = 24
     IPV = 4
     GROUP_TABLE = False
@@ -34,6 +37,9 @@ class FaucetTopoTestBase(FaucetTestBase):
 
     n_vlans = 0
     configuration_options = None
+    mininet_host_options = None
+    host_vlans = None
+    link_vlans = None
 
     host_information = None
     faucet_vips = None
@@ -173,6 +179,7 @@ class FaucetTopoTestBase(FaucetTestBase):
             n_vlans,
             **self.configuration_options
         )
+        self.mininet_host_options = mininet_host_options
         self.n_vlans = n_vlans
         self.host_vlans = host_vlans
         self.link_vlans = link_vlans
@@ -190,7 +197,12 @@ class FaucetTopoTestBase(FaucetTestBase):
             vlan = self.host_vlans[host_id]
             ip_interface = None
             if vlan is not None:
-                ip_interface = ipaddress.ip_interface(self.host_ip_address(host_id, vlan))
+                ip = self.host_ip_address(host_id, vlan)
+                if self.mininet_host_options and host_id in self.mininet_host_options:
+                    mininet_ip = self.mininet_host_options[host_id].get('ip', None)
+                    if mininet_ip:
+                        ip = mininet_ip
+                ip_interface = ipaddress.ip_interface(ip)
                 self.set_host_ip(host, ip_interface)
             self.host_information[host_id] = {
                 'host': host,
@@ -285,10 +297,10 @@ class FaucetTopoTestBase(FaucetTestBase):
             labels = {'dp_id': '0x%x' % int(dpid), 'dp_name': name}
             self.assertEqual(
                 0, self.scrape_prometheus_var(
-                    var='stack_cabling_errors_total', labels=labels, default=None))
+                    var='stack_cabling_errors_total', labels=labels, default=None, verify_consistent=True))
             self.assertGreater(
                 self.scrape_prometheus_var(
-                    var='stack_probes_received_total', labels=labels), 0)
+                    var='stack_probes_received_total', labels=labels, verify_consistent=True), 0)
 
     def verify_stack_hosts(self, verify_bridge_local_rule=True, retries=3):
         """Verify hosts with stack LLDP messages"""
@@ -317,7 +329,7 @@ class FaucetTopoTestBase(FaucetTestBase):
         labels.update({'dp_id': '0x%x' % int(dpid), 'dp_name': dp_name})
         return self.scrape_prometheus_var(
             'port_stack_state', labels=labels,
-            default=None, dpid=dpid)
+            default=None, dpid=dpid, verify_consistent=True)
 
     def wait_for_stack_port_status(self, dpid, dp_name, port_no, status, timeout=25):
         """Wait until prometheus detects a stack port has a certain status"""
@@ -488,7 +500,9 @@ class FaucetTopoTestBase(FaucetTestBase):
                 int_hosts.append(host)
                 int_or_ext = 0
             for dp_i in self.host_port_maps[host_id].keys():
-                dp_hosts[self.topo.switches_by_id[dp_i]][int_or_ext].append(host)
+                switch = self.topo.switches_by_id[dp_i]
+                if isinstance(dp_hosts[switch][int_or_ext], list):
+                    dp_hosts[switch][int_or_ext].append(host)
         return set(int_hosts), set(ext_hosts), dp_hosts
 
     def verify_protected_connectivity(self):
@@ -646,7 +660,7 @@ details partner lacp pdu:
                                 # Obtain up LACP ports for that dpid
                                 port_labels = self.port_labels(port)
                                 lacp_state = self.scrape_prometheus_var(
-                                    'port_lacp_state', port_labels, default=0, dpid=dpid)
+                                    'port_lacp_state', port_labels, default=0, dpid=dpid, verify_consistent=True)
                                 lacp_up_ports += 1 if lacp_state == 3 else 0
         return lacp_up_ports
 

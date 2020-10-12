@@ -29,7 +29,6 @@ import pstats
 import shutil
 import socket
 import tempfile
-import time
 import unittest
 import yaml
 
@@ -612,9 +611,7 @@ class ValveTestBases:
             self.bgp = None
             self.logger = None
 
-            self.faucet_event_sock = None
             self.registry = None
-            self.sock = None
             self.notifier = None
             self.network = None
             self.last_flows_to_dp = {}
@@ -650,13 +647,11 @@ class ValveTestBases:
             """
             self.tmpdir = tempfile.mkdtemp()
             self.config_file = os.path.join(self.tmpdir, 'valve_unit.yaml')
-            self.faucet_event_sock = os.path.join(self.tmpdir, 'event.sock')
             logfile = 'STDOUT' if log_stdout else os.path.join(self.tmpdir, 'faucet.log')
             self.logger = valve_util.get_logger(self.LOGNAME, logfile, logging.DEBUG, 0)
             self.registry = CollectorRegistry()
             self.metrics = faucet_metrics.FaucetMetrics(reg=self.registry)
-            self.notifier = faucet_event.FaucetEventNotifier(
-                self.faucet_event_sock, self.metrics, self.logger)
+            self.notifier = faucet_event.FaucetEventNotifier(None, self.metrics, self.logger)
             self.bgp = faucet_bgp.FaucetBgp(
                 self.logger, logfile, self.metrics, self.send_flows_to_dp_by_id)
             self.dot1x = faucet_dot1x.FaucetDot1x(
@@ -665,12 +660,9 @@ class ValveTestBases:
                 self.LOGNAME, self.logger, self.metrics, self.notifier,
                 self.bgp, self.dot1x, self.CONFIG_AUTO_REVERT, self.send_flows_to_dp_by_id)
             self.last_flows_to_dp[self.DP_ID] = []
-            self.notifier.start()
             initial_ofmsgs = self.update_config(
                 config, reload_expected=False,
                 error_expected=error_expected, configure_network=True)
-            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.sock.connect(self.faucet_event_sock)
             if not error_expected:
                 for dp_id in self.valves_manager.valves:
                     self.connect_dp(dp_id)
@@ -682,18 +674,63 @@ class ValveTestBases:
             valve_util.close_logger(self.logger)
             for valve in self.valves_manager.valves.values():
                 valve.close_logs()
-            self.sock.close()
             shutil.rmtree(self.tmpdir)
 
         def tearDown(self):
             """Tear down the test"""
             self.teardown_valves()
 
-        def apply_ofmsgs(self, ofmsgs, dp_id=None):
+        def _check_table_difference(self, before_hash, before_str, dp_id):
+            """
+            Checks the current table state after another check to ensure that
+            the current table state is equal to the before table state.
+
+            Args:
+                before_hash (int): Hash of the table before changes
+                before_str (str): String representation of the table before changes
+                dp_id (int): DP ID of the table to test difference
+            """
+            after_hash = self.network.hash_table(int(dp_id))
+            if before_hash != after_hash:
+                after_str = str(self.network.tables[dp_id])
+                diff = difflib.unified_diff(
+                    before_str.splitlines(), after_str.splitlines())
+                self.assertEqual(before_hash, after_hash,
+                                 msg='%s != %s\n'.join(diff) % (before_hash, after_hash))
+
+        def _verify_redundant_safe_offset_ofmsgs(self, ofmsgs, dp_id, offset=1):
+            """
+            Verify that a copy of the ofmsgs applied to the FakeOFTable with an offset
+            will converge to the original table state. This ensures that a redundant
+            controller with a delayed ofmsgs application will still result in
+            a consistent table structure.
+
+            Args:
+                ofmsgs (list): ofmsgs to copy and apply offset to the original ofmsgs
+                dp_id (int): The dp_id of the FakeOFTable to apply the ofmsgs to
+                offset (int): Offset for the copied ofmsgs
+            """
+            if offset:
+                before_hash, before_str = self.network.table_state(int(dp_id))
+                offset_ofmsgs = []
+                for i in range(0-offset, len(ofmsgs)):
+                    if i >= 0 and i < len(ofmsgs):
+                        offset_ofmsgs.append(ofmsgs[i])
+                    j = i + offset
+                    if j >= 0 and j < len(ofmsgs):
+                        offset_ofmsgs.append(ofmsgs[j])
+                self.network.apply_ofmsgs(int(dp_id), offset_ofmsgs, ignore_errors=True)
+                self._check_table_difference(before_hash, before_str, dp_id)
+
+        def apply_ofmsgs(self, ofmsgs, dp_id=None, offset=1, all_offsets=False):
             """
             Prepare and apply ofmsgs to a DP FakeOFTable
+
             Args:
-                dp_id: The dp_id of the FakeOFTable to apply the ofmsgs to
+                ofmsgs (list): Ofmsgs to prepare and then send to the FakeOFTable
+                dp_id (int): The dp_id of the FakeOFTable to apply the ofmsgs to
+                offset (int): offset for the duplicate flow offset check
+                all_offsets (bool): If true, test all offsets for the ofmsg offset check
             """
             if not ofmsgs:
                 return ofmsgs
@@ -709,7 +746,12 @@ class ValveTestBases:
                     reorder_ratio, 0.90,
                     'inefficient duplicate flow generation (before %u, after %u)' % (
                         before_flow_count, after_flow_count))
-            self.network.apply_ofmsgs(int(dp_id), ofmsgs)
+            self.network.apply_ofmsgs(int(dp_id), final_ofmsgs)
+            if all_offsets:
+                for offset_iter in range(len(ofmsgs)):
+                    self._verify_redundant_safe_offset_ofmsgs(ofmsgs, dp_id, offset_iter)
+            elif offset:
+                self._verify_redundant_safe_offset_ofmsgs(ofmsgs, dp_id, offset)
             return final_ofmsgs
 
         def send_flows_to_dp_by_id(self, valve, flows):
@@ -722,6 +764,14 @@ class ValveTestBases:
             for dp_id in self.valves_manager.valves:
                 self.last_flows_to_dp[dp_id] = []
             self.network = FakeOFNetwork(self.valves_manager, self.NUM_TABLES, self.REQUIRE_TFM)
+
+        def get_events(self):
+            events = []
+            while True:
+                event = self.valves_manager.notifier.get_event()
+                if not event:
+                    return events
+                events.append(event)
 
         def update_config(self, config, table_dpid=None, reload_type='cold',
                           reload_expected=True, error_expected=0,
@@ -739,7 +789,7 @@ class ValveTestBases:
             before_table_states = None
             if self.network is not None:
                 before_table_states = {
-                    dp_id: str(table) for dp_id, table in self.network.tables.items()}
+                    dp_id: table.table_state() for dp_id, table in self.network.tables.items()}
             before_dp_status = int(self.get_prom('dp_status'))
             existing_config = None
             if os.path.exists(self.config_file):
@@ -780,12 +830,8 @@ class ValveTestBases:
                     all_ofmsgs[dp_id] = reload_ofmsgs
                     if (not reload_expected and no_reload_no_table_change and
                             before_table_states is not None and dp_id in before_table_states):
-                        before_table_state = before_table_states[dp_id]
-                        after_table_state = str(self.network.tables[dp_id])
-                        diff = difflib.unified_diff(
-                            before_table_state.splitlines(), after_table_state.splitlines())
-                        self.assertEqual(
-                            before_table_state, after_table_state, msg='\n'.join(diff))
+                        before_hash, before_str = before_table_states[dp_id]
+                        self._check_table_difference(before_hash, before_str, dp_id)
             self.assertEqual(before_dp_status, int(self.get_prom('dp_status')))
             self.assertEqual(error_expected, self.get_prom('faucet_config_load_error', bare=True))
             return all_ofmsgs
@@ -805,18 +851,14 @@ class ValveTestBases:
             """
             if before_table_states is None:
                 before_table_states = {
-                    dp_id: str(table) for dp_id, table in self.network.tables.items()}
+                    dp_id: table.table_state() for dp_id, table in self.network.tables.items()}
             self.update_config(new_config, reload_type=reload_type, table_dpid=table_dpid)
             if verify_func is not None:
                 verify_func()
             self.update_config(orig_config, reload_type=reload_type, table_dpid=table_dpid)
-            for dp_id, table in self.network.tables.items():
-                if dp_id in before_table_states:
-                    final_table_state = str(table)
-                    diff = difflib.unified_diff(
-                        before_table_states[dp_id].splitlines(), final_table_state.splitlines())
-                    self.assertEqual(
-                        before_table_states[dp_id], final_table_state, msg='\n'.join(diff))
+            for dp_id, states in before_table_states.items():
+                before_hash, before_str = states
+                self._check_table_difference(before_hash, before_str, dp_id)
 
         def connect_dp(self, dp_id=None):
             """
@@ -833,7 +875,7 @@ class ValveTestBases:
             connect_msgs = (
                 valve.switch_features(None) +
                 valve.datapath_connect(self.mock_time(10), discovered_up_ports))
-            self.apply_ofmsgs(connect_msgs, dp_id)
+            connect_msgs = self.apply_ofmsgs(connect_msgs, dp_id)
             self.valves_manager.update_config_applied(sent={dp_id: True})
             self.assertEqual(1, int(self.get_prom('dp_status', dp_id=dp_id)))
             self.assertTrue(valve.dp.to_conf())
@@ -841,7 +883,14 @@ class ValveTestBases:
 
         def disconnect_dp(self):
             valve = self.valves_manager.valves[self.DP_ID]
-            valve.datapath_disconnect(time.time())
+            valve.datapath_disconnect(self.mock_time())
+
+        def migrate_stack_root(self, new_root_name):
+            now = self.mock_time()
+            self.valves_manager.set_stack_root(now, new_root_name)
+            self.valves_manager.reload_stack_root_config(now)
+            self.valves_manager.valve_flow_services(now, 'fast_state_expire')
+            self.trigger_all_ports()
 
         def cold_start(self, dp_id=None):
             """
@@ -854,7 +903,7 @@ class ValveTestBases:
             if dp_id is None:
                 dp_id = self.DP_ID
             valve = self.valves_manager.valves[dp_id]
-            valve.datapath_disconnect(time.time())
+            valve.datapath_disconnect(self.mock_time())
             return self.connect_dp(dp_id)
 
         def get_prom(self, var, labels=None, bare=False, dp_id=None):
@@ -1077,7 +1126,7 @@ class ValveTestBases:
             """Bring all the ports in a stack fully up"""
             for valve in self.valves_manager.valves.values():
                 valve.dp.dyn_running = True
-                for port in valve.dp.stack_ports:
+                for port in valve.dp.stack_ports():
                     port.stack_up()
 
         def up_stack_port(self, port, dp_id=None):
@@ -1121,7 +1170,7 @@ class ValveTestBases:
                 valve.dp.dyn_running = True
                 for port in valve.dp.ports.values():
                     port.dyn_phys_up = True
-                for port in valve.dp.stack_ports:
+                for port in valve.dp.stack_ports():
                     self.up_stack_port(port, dp_id=valve.dp.dp_id)
                     self._update_port_map(port, True)
             self.trigger_all_ports(packets=packets)
@@ -1161,11 +1210,10 @@ class ValveTestBases:
                 valve = self.valves_manager.valves[self.DP_ID]
             port = valve.dp.ports[port_no]
             port.dyn_stack_current_state = status
-            valve.switch_manager.update_stack_topo(True, valve.dp, port)
+            valve.stack_manager.update_stack_topo(True, valve.dp, port)
             for valve_vlan in valve.dp.vlans.values():
                 ofmsgs = valve.switch_manager.add_vlan(valve_vlan, cold_start=False)
-                if valve is self.valves_manager.valves[self.DP_ID]:
-                    self.apply_ofmsgs(ofmsgs, dp_id=self.DP_ID)
+                self.apply_ofmsgs(ofmsgs, dp_id=valve.dp.dp_id)
 
         def set_stack_port_up(self, port_no, valve=None):
             """Set stack port up recalculating topology as necessary."""
@@ -1398,7 +1446,7 @@ class ValveTestBases:
             """Test disconnection of DP from controller."""
             valve = self.valves_manager.valves[self.DP_ID]
             self.assertEqual(1, int(self.get_prom('dp_status')))
-            self.prom_inc(partial(valve.datapath_disconnect, time.time()), 'of_dp_disconnections_total')
+            self.prom_inc(partial(valve.datapath_disconnect, self.mock_time()), 'of_dp_disconnections_total')
             self.assertEqual(0, int(self.get_prom('dp_status')))
 
         def test_unexpected_port(self):
@@ -2260,7 +2308,7 @@ meters:
             valve = self.valves_manager.valves[self.DP_ID]
             for port_status in (0, 1):
                 self.apply_ofmsgs(valve.port_status_handler(
-                    1, ofp.OFPPR_MODIFY, port_status, [], time.time())[valve])
+                    1, ofp.OFPPR_MODIFY, port_status, [], self.mock_time())[valve])
 
         def test_unknown_port_status(self):
             """Test unknown port status message."""
@@ -2269,7 +2317,7 @@ meters:
             unknown_messages = list(set(range(0, len(known_messages) + 1)) - known_messages)
             self.assertTrue(unknown_messages)
             self.assertFalse(valve.port_status_handler(
-                1, unknown_messages[0], 1, [], time.time()).get(valve, []))
+                1, unknown_messages[0], 1, [], self.mock_time()).get(valve, []))
 
         def test_move_port(self):
             """Test host moves a port."""
@@ -2335,17 +2383,6 @@ meters:
                 dp_desc=b'test_dp_desc')
             valve.ofdescstats_handler(invalid_body)
 
-        def test_get_config_dict(self):
-            """Test API call for DP config."""
-            valve = self.valves_manager.valves[self.DP_ID]
-            config_dict = valve.get_config_dict()
-            self.assertIn('dps', config_dict)
-            self.assertIn(valve.dp.name, config_dict['dps'])
-            self.assertEqual(len(config_dict['dps']), 1)
-            self.assertIn('vlans', config_dict)
-            self.assertIn('acls', config_dict)
-            self.assertTrue(valve.dp.get_tables())
-
         def test_dp_disconnect_cleanup(self):
             """Test port varz cleanup post dp disconnect"""
             valve = self.valves_manager.valves[self.DP_ID]
@@ -2391,6 +2428,8 @@ meters:
                     native_vlan: vlan200
                 3:
                     stack: {dp: s2, port: 3}
+                4:
+                    stack: {dp: s5, port: 4}
         s2:
             dp_id: 2
             hardware: 'GenericTFM'
@@ -2425,6 +2464,20 @@ meters:
                     native_vlan: vlan200
                 3:
                     stack: {dp: s3, port: 4}
+                4:
+                    stack: {dp: s5, port: 3}
+        s5:
+            dp_id: 5
+            hardware: 'GenericTFM'
+            interfaces:
+                1:
+                    native_vlan: vlan100
+                2:
+                    native_vlan: vlan200
+                3:
+                    stack: {dp: s4, port: 4}
+                4:
+                    stack: {dp: s1, port: 4}
     """
 
         def create_config(self):
@@ -2448,13 +2501,7 @@ meters:
             """Create a stacking config file."""
             self.create_config()
             self.setup_valves(self.CONFIG)
-            for valve in self.valves_manager.valves.values():
-                valve.dp.dyn_running = True
-                for port in valve.dp.ports.values():
-                    port.dyn_finalized = False
-                    port.enabled = True
-                    port.dyn_phys_up = True
-                    port.dyn_finalized = True
+            self.trigger_stack_ports()
 
         @staticmethod
         def create_mac(vindex, host):
@@ -2498,7 +2545,7 @@ meters:
                 self.assertEqual(eth_match, nexthop.eth_src)
                 if host_valve != valve:
                     # Check the proper nexthop port is cached
-                    expected_port = valve.dp.shortest_path_port(host_valve.dp.name)
+                    expected_port = valve.stack_manager.relative_port_towards(host_valve.dp.name)
                     self.assertEqual(expected_port, nexthop.port)
 
         def test_router_cache_learn_hosts(self):

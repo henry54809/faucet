@@ -27,14 +27,17 @@ from faucet.prom_client import PromClient
 class FaucetMetrics(PromClient):
     """Container class for objects that can be exported to Prometheus."""
 
-    _dpid_counters = None # type: dict
-    _dpid_gauges = None # type: dict
+    _dpid_counters = None  # type: dict
+    _dpid_gauges = None  # type: dict
 
     def __init__(self, reg=None):
-        super(FaucetMetrics, self).__init__(reg=reg)
+        super().__init__(reg=reg)
         self.PORT_REQUIRED_LABELS = self.REQUIRED_LABELS + ['port', 'port_description']
         self._dpid_counters = {}
         self._dpid_gauges = {}
+        self.ryu_config = self._gauge(
+            'ryu_config',
+            'ryu configuration option', ['param'])
         self.faucet_stack_root_dpid = self._gauge(
             'faucet_stack_root_dpid',
             'set to current stack root DPID', [])
@@ -231,6 +234,7 @@ class FaucetMetrics(PromClient):
             gauge.labels(**dp_labels).set(0)
 
     def inc_var(self, var, labels, val=1):
+        """Increment a variable."""
         assert labels is not None
         metrics_var = getattr(self, var)
         metrics_var.labels(**labels).inc(val)

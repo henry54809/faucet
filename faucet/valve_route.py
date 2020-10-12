@@ -125,7 +125,7 @@ class ValveRouteManager(ValveManagerBase):
     def __init__(self, logger, notify, global_vlan, neighbor_timeout,
                  max_hosts_per_resolve_cycle, max_host_fib_retry_count,
                  max_resolve_backoff_time, proactive_learn, dec_ttl, multi_out,
-                 fib_table, vip_table, pipeline, routers, switch_manager):
+                 fib_table, vip_table, pipeline, routers, stack_manager):
         self.notify = notify
         self.logger = logger
         self.global_vlan = AnonVLAN(global_vlan)
@@ -143,7 +143,7 @@ class ValveRouteManager(ValveManagerBase):
         self.routers = routers
         self.active = False
         self.global_routing = self._global_routing()
-        self.switch_manager = switch_manager
+        self.stack_manager = stack_manager
         if self.global_routing:
             self.logger.info('global routing enabled')
 
@@ -176,18 +176,25 @@ class ValveRouteManager(ValveManagerBase):
     def _flood_stack_links(self, pkt_builder, vlan, multi_out=True, *args):
         """Return flood packet-out actions to stack ports for gw resolving"""
         ofmsgs = []
-        if isinstance(self.switch_manager, ValveSwitchStackManagerBase):
-            ports = self.switch_manager._stack_flood_ports()
+        if self.stack_manager:
+            ports = []
+            if self.stack_manager.stack.is_root():
+                ports = list(self.stack_manager.away_ports -
+                             self.stack_manager.inactive_away_ports -
+                             self.stack_manager.pruned_away_ports)
+            else:
+                if self.stack_manager.chosen_towards_port is not None:
+                    ports = [self.stack_manager.chosen_towards_port]
             if ports:
                 running_port_nos = [port.number for port in ports if port.running()]
                 pkt = pkt_builder(vlan.vid, *args)
                 if running_port_nos:
                     random.shuffle(running_port_nos)
                     if multi_out:
-                        ofmsgs.append(valve_of.packetouts(running_port_nos, pkt.data))
+                        ofmsgs.append(valve_of.packetouts(running_port_nos, bytes(pkt.data)))
                     else:
                         ofmsgs.extend(
-                            [valve_of.packetout(port_no, pkt.data) for port_no in running_port_nos])
+                            [valve_of.packetout(port_no, bytes(pkt.data)) for port_no in running_port_nos])
         return ofmsgs
 
     def _resolve_gw_on_vlan(self, vlan, faucet_vip, ip_gw):
@@ -214,7 +221,7 @@ class ValveRouteManager(ValveManagerBase):
     def _controller_and_flood(self):
         """Return instructions to forward packet to l2-forwarding"""
         return self.pipeline.accept_to_l2_forwarding(
-            actions=[valve_of.output_controller(max_len=self.MAX_PACKET_IN_SIZE)])
+            actions=(valve_of.output_controller(max_len=self.MAX_PACKET_IN_SIZE),))
 
     def _resolve_vip_response(self, pkt_meta, solicited_ip, now):
         """Learn host requesting for router, and return packet-out ofmsgs router response"""
@@ -297,7 +304,7 @@ class ValveRouteManager(ValveManagerBase):
             self.fib_table.set_field(eth_dst=eth_dst)])
         if self.dec_ttl:
             actions.append(valve_of.dec_ip_ttl())
-        return actions
+        return tuple(actions)
 
     def _route_match(self, vlan, ip_dst):
         """Return vid, dst, eth_type flowrule match for fib entry"""
@@ -357,14 +364,14 @@ class ValveRouteManager(ValveManagerBase):
         ofmsgs.append(self.fib_table.flowmod(
             self._route_match(vlan, faucet_vip_host),
             priority=priority,
-            inst=[self.fib_table.goto(self.vip_table)]))
+            inst=(self.fib_table.goto(self.vip_table),)))
         if self.proactive_learn and not faucet_vip.ip.is_link_local:
             routed_vlans = self._routed_vlans(vlan)
             for routed_vlan in routed_vlans:
                 ofmsgs.append(self.fib_table.flowmod(
                     self._route_match(routed_vlan, faucet_vip),
                     priority=learn_connected_priority,
-                    inst=[self.fib_table.goto(self.vip_table)]))
+                    inst=(self.fib_table.goto(self.vip_table),)))
             # Unicast ICMP to us.
             priority -= 1
             ofmsgs.append(self.vip_table.flowcontroller(
@@ -1011,7 +1018,7 @@ class ValveIPv6RouteManager(ValveRouteManager):
         ofmsgs.append(self.fib_table.flowmod(
             self._route_match(vlan, faucet_vip_broadcast),
             priority=priority,
-            inst=[self.fib_table.goto(self.vip_table)]))
+            inst=(self.fib_table.goto(self.vip_table),)))
         return ofmsgs
 
     def _nd_solicit_handler(self, now, pkt_meta, _ipv6_pkt, icmpv6_pkt):

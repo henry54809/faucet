@@ -5,14 +5,16 @@
 import json
 import os
 import networkx
+import ipaddress
 
 from mininet.log import error
 
 from clib.mininet_test_base import IPV4_ETH, IPV6_ETH
 from clib.mininet_test_base_topo import FaucetTopoTestBase
 
+from clib import mininet_test_util
 
-class FaucetMultiDPTest(FaucetTopoTestBase):
+class FaucetMultiDPTestBase(FaucetTopoTestBase):
     """Converts old FaucetStringOfDPTest class to a generalized test topology & config builder"""
 
     def mininet_host_options(self):
@@ -195,7 +197,7 @@ class FaucetMultiDPTest(FaucetTopoTestBase):
         self.start_net()
 
 
-class FaucetStringOfDPUntaggedTest(FaucetMultiDPTest):
+class FaucetStringOfDPUntaggedTest(FaucetMultiDPTestBase):
     """Test untagged hosts"""
 
     NUM_DPS = 3
@@ -208,7 +210,7 @@ class FaucetStringOfDPUntaggedTest(FaucetMultiDPTest):
         self.verify_traveling_dhcp_mac()
 
 
-class FaucetStringOfDPTaggedTest(FaucetMultiDPTest):
+class FaucetStringOfDPTaggedTest(FaucetMultiDPTestBase):
     """Test tagged hosts"""
 
     NUM_DPS = 3
@@ -221,7 +223,7 @@ class FaucetStringOfDPTaggedTest(FaucetMultiDPTest):
         self.verify_traveling_dhcp_mac()
 
 
-class FaucetSingleStackStringOfDPTagged0Test(FaucetMultiDPTest):
+class FaucetSingleStackStringOfDPTagged0Test(FaucetMultiDPTestBase):
     """Test topology of stacked datapaths with tagged hosts."""
 
     NUM_DPS = 3
@@ -235,7 +237,7 @@ class FaucetSingleStackStringOfDPTagged0Test(FaucetMultiDPTest):
             self.verify_one_stack_down(0, coldstart)
 
 
-class FaucetSingleStackStringOfDPTagged1Test(FaucetMultiDPTest):
+class FaucetSingleStackStringOfDPTagged1Test(FaucetMultiDPTestBase):
     """Test topology of stacked datapaths with tagged hosts."""
 
     NUM_DPS = 3
@@ -249,7 +251,7 @@ class FaucetSingleStackStringOfDPTagged1Test(FaucetMultiDPTest):
             self.verify_one_stack_down(1, coldstart)
 
 
-class FaucetStringOfDPLACPUntaggedTest(FaucetMultiDPTest):
+class FaucetStringOfDPLACPUntaggedTest(FaucetMultiDPTestBase):
     """Test topology of LACP-connected datapaths with untagged hosts."""
 
     NUM_DPS = 2
@@ -423,7 +425,7 @@ class FaucetStringOfDPLACPUntaggedTest(FaucetMultiDPTest):
         self.wait_for_lacp_port_init(end_port, self.dpids[1], self.topo.switches_by_id[1])
 
 
-class FaucetStackStringOfDPUntaggedTest(FaucetMultiDPTest):
+class FaucetStackStringOfDPUntaggedTest(FaucetMultiDPTestBase):
     """Test topology of stacked datapaths with untagged hosts."""
 
     NUM_DPS = 2
@@ -450,7 +452,7 @@ class FaucetStackStringOfDPUntaggedTest(FaucetMultiDPTest):
         self.verify_events_log(self.event_log)
 
 
-class FaucetSingleStackStringOfDPExtLoopProtUntaggedTest(FaucetMultiDPTest):
+class FaucetSingleStackStringOfDPExtLoopProtUntaggedTest(FaucetMultiDPTestBase):
     """Test topology of stacked datapaths with untagged hosts."""
 
     NUM_DPS = 2
@@ -505,7 +507,7 @@ class FaucetSingleStackStringOfDPExtLoopProtUntaggedTest(FaucetMultiDPTest):
         self.validate_with_externals_down_fails(self.topo.switches_by_id[1])
 
 
-class FaucetSingleStackStringOf3DPExtLoopProtUntaggedTest(FaucetMultiDPTest):
+class FaucetSingleStackStringOf3DPExtLoopProtUntaggedTest(FaucetMultiDPTestBase):
     """Test topology of stacked datapaths with untagged hosts."""
 
     NUM_DPS = 3
@@ -551,7 +553,7 @@ class FaucetGroupStackStringOfDPUntaggedTest(FaucetStackStringOfDPUntaggedTest):
     GROUP_TABLE = True
 
 
-class FaucetStackRingOfDPTest(FaucetMultiDPTest):
+class FaucetStackRingOfDPTest(FaucetMultiDPTestBase):
     """Test Faucet with a 3-cycle topology"""
 
     NUM_DPS = 3
@@ -582,7 +584,7 @@ class FaucetSingleStack4RingOfDPTest(FaucetStackRingOfDPTest):
     NUM_DPS = 4
 
 
-class FaucetSingleStack3RingOfDPReversePortOrderTest(FaucetMultiDPTest):
+class FaucetSingleStack3RingOfDPReversePortOrderTest(FaucetMultiDPTestBase):
     """Make sure even if the ports are in reverse order, the stack can properly form"""
 
     NUM_DPS = 3
@@ -620,7 +622,7 @@ class FaucetSingleStack4RingOfDPReversePortOrderTest(FaucetSingleStack3RingOfDPR
     NUM_DPS = 4
 
 
-class FaucetSingleStackAclControlTest(FaucetMultiDPTest):
+class FaucetSingleStackAclControlTest(FaucetMultiDPTestBase):
     """Test ACL control of stacked datapaths with untagged hosts."""
 
     NUM_DPS = 3
@@ -759,7 +761,7 @@ class FaucetSingleStackAclControlTest(FaucetMultiDPTest):
         self.verify_no_cable_errors()
 
 
-class FaucetSingleStackOrderedAclControlTest(FaucetMultiDPTest):
+class FaucetSingleStackOrderedAclControlTest(FaucetMultiDPTestBase):
     """Test ACL control of stacked datapaths with untagged hosts."""
 
     NUM_DPS = 3
@@ -896,7 +898,7 @@ class FaucetSingleStackOrderedAclControlTest(FaucetMultiDPTest):
         self.verify_no_cable_errors()
 
 
-class FaucetStringOfDPACLOverrideTest(FaucetMultiDPTest):
+class FaucetStringOfDPACLOverrideTest(FaucetMultiDPTestBase):
     """Test overriding ACL rules"""
 
     NUM_DPS = 2
@@ -1008,7 +1010,7 @@ class FaucetStringOfDPACLOverrideTest(FaucetMultiDPTest):
         self.verify_tp_dst_notblocked(5002, first_host, second_host)
 
 
-class FaucetTunnelSameDpTest(FaucetMultiDPTest):
+class FaucetTunnelSameDpTest(FaucetMultiDPTestBase):
     """Test the tunnel ACL option with output to the same DP"""
 
     NUM_DPS = 2
@@ -1055,7 +1057,7 @@ class FaucetTunnelSameDpTest(FaucetMultiDPTest):
         self.verify_tunnel_established(src_host, dst_host, other_host)
 
 
-class FaucetSingleTunnelTest(FaucetMultiDPTest):
+class FaucetSingleTunnelTest(FaucetMultiDPTestBase):
     """Test the Faucet tunnel ACL option both locally and remotely with link failure"""
 
     NUM_DPS = 2
@@ -1232,7 +1234,7 @@ class FaucetTunnelAllowTest(FaucetTopoTestBase):
         self.check_host_connectivity_by_id(0, 3)
 
 
-class FaucetTunnelSameDpOrderedTest(FaucetMultiDPTest):
+class FaucetTunnelSameDpOrderedTest(FaucetMultiDPTestBase):
     """Test the tunnel ACL option with output to the same DP"""
 
     NUM_DPS = 2
@@ -1279,7 +1281,7 @@ class FaucetTunnelSameDpOrderedTest(FaucetMultiDPTest):
         self.verify_tunnel_established(src_host, dst_host, other_host)
 
 
-class FaucetSingleTunnelOrderedTest(FaucetMultiDPTest):
+class FaucetSingleTunnelOrderedTest(FaucetMultiDPTestBase):
     """Test the Faucet tunnel ACL option"""
 
     NUM_DPS = 2
@@ -2070,7 +2072,7 @@ class FaucetSingleMCLAGComplexTest(FaucetTopoTestBase):
             'Number of links detecting the broadcast ARP %s (!= 1)' % except_count)
 
 
-class FaucetStackTopoChangeTest(FaucetMultiDPTest):
+class FaucetStackTopoChangeTest(FaucetMultiDPTestBase):
     """Test STACK_TOPO_CHANGE event structure"""
 
     NUM_DPS = 3
@@ -2170,7 +2172,6 @@ class FaucetStackWarmStartTest(FaucetTopoTestBase):
 
     def test_transit_vlan_change(self):
         """Test warm starting changing host native VLAN with a transit stack switch"""
-        import ipaddress
         host_links = {0: [0], 1: [0], 2: [2], 3: [2]}
         host_vlans = {0: 0, 1: 0, 2: 0, 3: 1}
         self.set_up(host_links=host_links, host_vlans=host_vlans)
@@ -2307,3 +2308,336 @@ class FaucetStackWarmStartTest(FaucetTopoTestBase):
             cold_start=False, change_expected=True, dpid=self.topo.dpids_by_id[0])
         self.verify_stack_up()
         self.verify_intervlan_routing()
+
+
+class FaucetDHCPSingleVLANTest(FaucetTopoTestBase):
+    """Test Faucet in a single DP network with DHCP allocating IP addresses to hosts on a single VLAN"""
+
+    NUM_DPS = 1
+    NUM_HOSTS = 3
+    NUM_VLANS = 1
+
+    N_TAGGED = 1
+    N_UNTAGGED = 3
+
+    SOFTWARE_ONLY = True
+
+    def host_ip_address(self, host_index, vlan_index):
+        """Create a string of the host IP address"""
+        return '0.0.0.0'
+
+    def setUp(self):
+        """Ignore to allow for setting up network in each test"""
+
+    def set_up(self):
+        """Set up network"""
+        super().setUp()
+        network_graph = networkx.path_graph(self.NUM_DPS)
+        dp_options = {}
+        for dp_i in network_graph.nodes():
+            dp_options.setdefault(dp_i, {
+                'group_table': self.GROUP_TABLE,
+                'ofchannel_log': self.debug_log_path + str(dp_i) if self.debug_log_path else None,
+                'hardware': self.hardware if dp_i == 0 and self.hw_dpid else 'Open vSwitch'
+            })
+        switch_links = []
+        link_vlans = {}
+        host_links = {0: [0], 1: [0], 2: [0]}
+        # two host on each native VLAN then DHCP host on tagged VLANs
+        host_vlans = {0: 0, 1: 0, 2: [0]}
+        # Configure no-IP for non-dhcp hosts as they will obtain IP from DHCP
+        mininet_host_options = {h_i: {'ip': '0.0.0.0'} for h_i in range(self.NUM_HOSTS - 1)}
+        mininet_host_options[2] = {'vlan_intfs': {0: '10.1.0.20/24'}, 'ip': '0.0.0.0'}
+        vlan_options = {
+            v_i: {'faucet_vips': [self.faucet_vip(v_i)], 'faucet_mac': self.faucet_mac(v_i)}
+            for v_i in range(self.NUM_VLANS)}
+        self.build_net(
+            host_links=host_links,
+            host_vlans=host_vlans,
+            switch_links=switch_links,
+            link_vlans=link_vlans,
+            n_vlans=self.NUM_VLANS,
+            dp_options=dp_options,
+            vlan_options=vlan_options,
+            mininet_host_options=mininet_host_options
+        )
+        self.start_net()
+
+    @staticmethod
+    def dhclient_callback(host, timeout):
+        """Run DHCLIENT to obtain ip address via DHCP"""
+        dhclient_cmd = 'dhclient -pf /run/dhclient-%s.pid -lf /run/dhclient-%s.leases %s' % (
+            host.name, host.name, host.defaultIntf())
+        return host.cmd(mininet_test_util.timeout_cmd(dhclient_cmd, timeout), verbose=True)
+
+    def test_dhcp_ip_allocation(self):
+        """Test that hosts can get allocated addresses from DHCP and can then ping each other"""
+        self.set_up()
+        iprange = '10.1.0.10,10.1.0.20'
+        router = '10.1.0.254'
+        vlan = 100
+        host = self.net.get(self.topo.hosts_by_id[2])
+        host.create_dnsmasq(self.tmpdir, iprange, router, vlan, host.vlan_intfs[0])
+        for host_n in range(self.NUM_HOSTS - 1):
+            host = self.net.get(self.topo.hosts_by_id[host_n])
+            self.dhclient_callback(host, 10)
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[0]).return_ip()[:-3], '10.1.0.10')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[1]).return_ip()[:-3], '10.1.0.11')
+        self.check_host_connectivity_by_id(0, 1)
+
+
+class FaucetStackDHCPSingleVLANTest(FaucetTopoTestBase):
+    """Test Faucet in a multi DP network with DHCP allocating IP addresses to hosts on a single VLAN"""
+
+    NUM_DPS = 2
+    NUM_HOSTS = 5
+    NUM_VLANS = 1
+
+    N_TAGGED = 1
+    N_UNTAGGED = 4
+
+    SOFTWARE_ONLY = True
+
+    def host_ip_address(self, host_index, vlan_index):
+        """Create a string of the host IP address"""
+        return '0.0.0.0'
+
+    def setUp(self):
+        """Ignore to allow for setting up network in each test"""
+
+    def set_up(self):
+        """Set up network"""
+        """Set up network"""
+        super().setUp()
+        network_graph = networkx.path_graph(self.NUM_DPS)
+        dp_options = {}
+        for dp_i in network_graph.nodes():
+            dp_options.setdefault(dp_i, {
+                'group_table': self.GROUP_TABLE,
+                'ofchannel_log': self.debug_log_path + str(dp_i) if self.debug_log_path else None,
+                'hardware': self.hardware if dp_i == 0 and self.hw_dpid else 'Open vSwitch'
+            })
+            if dp_i == 0:
+                dp_options[dp_i]['stack'] = {'priority': 1}
+        switch_links = list(network_graph.edges())
+        link_vlans = {edge: None for edge in switch_links}
+        host_links = {0: [0], 1: [0], 2: [1], 3: [1], 4: [0]}
+        # two host on each native VLAN then DHCP host on tagged VLANs
+        host_vlans = {0: 0, 1: 0, 2: 0, 3: 0, 4: [0]}
+        # Configure no-IP for non-dhcp hosts as they will obtain IP from DHCP
+        mininet_host_options = {h_i: {'ip': '0.0.0.0'} for h_i in range(self.NUM_HOSTS - 1)}
+        mininet_host_options[4] = {'vlan_intfs': {0: '10.1.0.20/24'}, 'ip': '0.0.0.0'}
+        vlan_options = {
+            v_i: {'faucet_vips': [self.faucet_vip(v_i)], 'faucet_mac': self.faucet_mac(v_i)}
+            for v_i in range(self.NUM_VLANS)}
+        self.build_net(
+            host_links=host_links,
+            host_vlans=host_vlans,
+            switch_links=switch_links,
+            link_vlans=link_vlans,
+            n_vlans=self.NUM_VLANS,
+            dp_options=dp_options,
+            vlan_options=vlan_options,
+            mininet_host_options=mininet_host_options
+        )
+        self.start_net()
+
+    @staticmethod
+    def dhclient_callback(host, timeout):
+        """Run DHCLIENT to obtain ip address via DHCP"""
+        dhclient_cmd = 'dhclient -pf /run/dhclient-%s.pid -lf /run/dhclient-%s.leases %s' % (
+            host.name, host.name, host.defaultIntf())
+        return host.cmd(mininet_test_util.timeout_cmd(dhclient_cmd, timeout), verbose=True)
+
+    def test_dhcp_ip_allocation(self):
+        """Test that hosts can get allocated addresses from DHCP and can then ping each other"""
+        self.set_up()
+        iprange = '10.1.0.10,10.1.0.20'
+        router = '10.1.0.254'
+        vlan = 100
+        host = self.net.get(self.topo.hosts_by_id[4])
+        host.create_dnsmasq(self.tmpdir, iprange, router, vlan, host.vlan_intfs[0])
+        for host_n in range(self.NUM_HOSTS - 1):
+            host = self.net.get(self.topo.hosts_by_id[host_n])
+            self.dhclient_callback(host, 10)
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[0]).return_ip()[:-3], '10.1.0.10')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[1]).return_ip()[:-3], '10.1.0.11')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[2]).return_ip()[:-3], '10.1.0.12')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[3]).return_ip()[:-3], '10.1.0.13')
+        self.check_host_connectivity_by_id(0, 1)
+        self.check_host_connectivity_by_id(1, 2)
+        self.check_host_connectivity_by_id(2, 3)
+
+
+class FaucetDHCPSingleTaggedInterfaceTest(FaucetTopoTestBase):
+    """
+    Test Faucet in a single DP network with DHCP allocating IP addresses to
+       hosts on multiple VLANs from a single tagged DHCP interface
+    """
+
+    NUM_DPS = 1
+    NUM_HOSTS = 5
+    NUM_VLANS = 2
+
+    N_TAGGED = 1
+    N_UNTAGGED = 4
+
+    SOFTWARE_ONLY = True
+
+    def host_ip_address(self, host_index, vlan_index):
+        """Create a string of the host IP address"""
+        return '0.0.0.0'
+
+    def setUp(self):
+        """Ignore to allow for setting up network in each test"""
+
+    def set_up(self):
+        """Set up network"""
+        super().setUp()
+        network_graph = networkx.path_graph(self.NUM_DPS)
+        dp_options = {}
+        for dp_i in network_graph.nodes():
+            dp_options.setdefault(dp_i, {
+                'group_table': self.GROUP_TABLE,
+                'ofchannel_log': self.debug_log_path + str(dp_i) if self.debug_log_path else None,
+                'hardware': self.hardware if dp_i == 0 and self.hw_dpid else 'Open vSwitch'
+            })
+        switch_links = []
+        link_vlans = {}
+        host_links = {0: [0], 1: [0], 2: [0], 3: [0], 4: [0]}
+        # two host on each native VLAN then DHCP host on tagged VLANs
+        host_vlans = {0: 0, 1: 0, 2: 1, 3: 1, 4: [0, 1]}
+        # Configure no-IP for non-dhcp hosts as they will obtain IP from DHCP
+        mininet_host_options = {h_i: {'ip': '0.0.0.0'} for h_i in range(self.NUM_HOSTS - 1)}
+        mininet_host_options[4] = {'vlan_intfs': {0: '10.1.0.20/24', 1: '10.2.0.20/24'}, 'ip': '0.0.0.0'}
+        vlan_options = {
+            v_i: {'faucet_vips': [self.faucet_vip(v_i)], 'faucet_mac': self.faucet_mac(v_i)}
+            for v_i in range(self.NUM_VLANS)}
+        self.build_net(
+            host_links=host_links,
+            host_vlans=host_vlans,
+            switch_links=switch_links,
+            link_vlans=link_vlans,
+            n_vlans=self.NUM_VLANS,
+            dp_options=dp_options,
+            vlan_options=vlan_options,
+            mininet_host_options=mininet_host_options
+        )
+        self.start_net()
+
+    @staticmethod
+    def dhclient_callback(host, timeout):
+        """Run DHCLIENT to obtain ip address via DHCP"""
+        dhclient_cmd = 'dhclient -pf /run/dhclient-%s.pid -lf /run/dhclient-%s.leases %s' % (
+            host.name, host.name, host.defaultIntf())
+        return host.cmd(mininet_test_util.timeout_cmd(dhclient_cmd, timeout), verbose=True)
+
+    def test_dhcp_ip_allocation(self):
+        """Test that hosts can get allocated addresses from DHCP and can then ping each other"""
+        self.set_up()
+        host = self.net.get(self.topo.hosts_by_id[4])
+        iprange = '10.1.0.10,10.1.0.20'
+        router = '10.1.0.254'
+        vlan = 100
+        host.create_dnsmasq(self.tmpdir, iprange, router, vlan, host.vlan_intfs[0])
+        iprange = '10.2.0.10,10.2.0.20'
+        router = '10.2.0.254'
+        vlan = 200
+        host.create_dnsmasq(self.tmpdir, iprange, router, vlan, host.vlan_intfs[1])
+        for host_n in range(self.NUM_HOSTS - 1):
+            host = self.net.get(self.topo.hosts_by_id[host_n])
+            self.dhclient_callback(host, 10)
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[0]).return_ip()[:-3], '10.1.0.10')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[1]).return_ip()[:-3], '10.1.0.11')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[2]).return_ip()[:-3], '10.2.0.10')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[3]).return_ip()[:-3], '10.2.0.11')
+        self.check_host_connectivity_by_id(0, 1)
+        self.check_host_connectivity_by_id(2, 3)
+
+
+class FaucetStackDHCPSingleTaggedInterfaceTest(FaucetTopoTestBase):
+    """
+    Test Faucet in a multi DP network with DHCP allocating IP addresses to
+       hosts on multiple VLANs from a single tagged DHCP interface
+    """
+
+    NUM_DPS = 2
+    NUM_HOSTS = 5
+    NUM_VLANS = 2
+
+    N_TAGGED = 1
+    N_UNTAGGED = 4
+
+    SOFTWARE_ONLY = True
+
+    def host_ip_address(self, host_index, vlan_index):
+        """Create a string of the host IP address"""
+        return '0.0.0.0'
+
+    def setUp(self):
+        """Ignore to allow for setting up network in each test"""
+
+    def set_up(self):
+        """Set up network"""
+        super().setUp()
+        network_graph = networkx.path_graph(self.NUM_DPS)
+        dp_options = {}
+        for dp_i in network_graph.nodes():
+            dp_options.setdefault(dp_i, {
+                'group_table': self.GROUP_TABLE,
+                'ofchannel_log': self.debug_log_path + str(dp_i) if self.debug_log_path else None,
+                'hardware': self.hardware if dp_i == 0 and self.hw_dpid else 'Open vSwitch'
+            })
+            if dp_i == 0:
+                dp_options[dp_i]['stack'] = {'priority': 1}
+        switch_links = list(network_graph.edges())
+        link_vlans = {edge: None for edge in switch_links}
+        host_links = {0: [0], 1: [0], 2: [1], 3: [1], 4: [0]}
+        # two host on each native VLAN then DHCP host on tagged VLANs
+        host_vlans = {0: 0, 1: 1, 2: 0, 3: 1, 4: [0, 1]}
+        # Configure no-IP for non-dhcp hosts as they will obtain IP from DHCP
+        mininet_host_options = {h_i: {'ip': '0.0.0.0'} for h_i in range(self.NUM_HOSTS - 1)}
+        mininet_host_options[4] = {'vlan_intfs': {0: '10.1.0.20/24', 1: '10.2.0.20/24'}, 'ip': '0.0.0.0'}
+        vlan_options = {
+            v_i: {'faucet_vips': [self.faucet_vip(v_i)], 'faucet_mac': self.faucet_mac(v_i)}
+            for v_i in range(self.NUM_VLANS)}
+        self.build_net(
+            host_links=host_links,
+            host_vlans=host_vlans,
+            switch_links=switch_links,
+            link_vlans=link_vlans,
+            n_vlans=self.NUM_VLANS,
+            dp_options=dp_options,
+            vlan_options=vlan_options,
+            mininet_host_options=mininet_host_options
+        )
+        self.start_net()
+
+    @staticmethod
+    def dhclient_callback(host, timeout):
+        """Run DHCLIENT to obtain ip address via DHCP"""
+        dhclient_cmd = 'dhclient -pf /run/dhclient-%s.pid -lf /run/dhclient-%s.leases %s' % (
+            host.name, host.name, host.defaultIntf())
+        return host.cmd(mininet_test_util.timeout_cmd(dhclient_cmd, timeout), verbose=True)
+
+    def test_dhcp_ip_allocation(self):
+        """Test that hosts can get allocated addresses from DHCP and can then ping each other"""
+        self.set_up()
+        host = self.net.get(self.topo.hosts_by_id[4])
+        iprange = '10.1.0.10,10.1.0.20'
+        router = '10.1.0.254'
+        vlan = 100
+        host.create_dnsmasq(self.tmpdir, iprange, router, vlan, host.vlan_intfs[0])
+        iprange = '10.2.0.10,10.2.0.20'
+        router = '10.2.0.254'
+        vlan = 200
+        host.create_dnsmasq(self.tmpdir, iprange, router, vlan, host.vlan_intfs[1])
+        for host_n in range(self.NUM_HOSTS - 1):
+            host = self.net.get(self.topo.hosts_by_id[host_n])
+            self.dhclient_callback(host, 10)
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[0]).return_ip()[:-3], '10.1.0.10')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[2]).return_ip()[:-3], '10.1.0.11')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[1]).return_ip()[:-3], '10.2.0.10')
+        self.assertEqual(self.net.get(self.topo.hosts_by_id[3]).return_ip()[:-3], '10.2.0.11')
+        self.check_host_connectivity_by_id(0, 2)
+        self.check_host_connectivity_by_id(1, 3)

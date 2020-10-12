@@ -188,7 +188,7 @@ def ignore_port(port_num):
         bool: True if FAUCET should ignore this port.
     """
     # special case OFPP_LOCAL to allow FAUCET to manage switch admin interface.
-    if port_num == ofp.OFPP_LOCAL:
+    if port_num in (ofp.OFPP_LOCAL, ofp.OFPP_IN_PORT):
         return False
     # 0xF0000000 and up are not physical ports.
     return port_num > 0xF0000000
@@ -376,6 +376,11 @@ def apply_meter(meter_id):
     return parser.OFPInstructionMeter(meter_id, ofp.OFPIT_METER)
 
 
+@functools.lru_cache()
+def _apply_actions(actions):
+    return parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)
+
+
 def apply_actions(actions):
     """Return instruction that applies action list.
 
@@ -384,9 +389,10 @@ def apply_actions(actions):
     Returns:
         ryu.ofproto.ofproto_v1_3_parser.OFPInstruction: instruction of actions.
     """
-    return parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)
+    return _apply_actions(tuple(actions))
 
 
+@functools.lru_cache()
 def goto_table(table):
     """Return instruction to goto table.
 
@@ -413,6 +419,7 @@ def metadata_goto_table(metadata, mask, table):
         ]
 
 
+@functools.lru_cache()
 def set_field(**kwds):
     """Return action to set any field.
 
@@ -461,6 +468,7 @@ def push_vlan_act(table, vlan_vid, eth_type=ether.ETH_TYPE_8021Q):
     ]
 
 
+@functools.lru_cache()
 def dec_ip_ttl():
     """Return OpenFlow action to decrement IP TTL.
 
@@ -585,6 +593,7 @@ def packetouts(port_nums, data):
         data=data)
 
 
+@functools.lru_cache()
 def packetout(port_num, data):
     """Return OpenFlow action to packet out to dataplane from controller.
 
@@ -747,6 +756,7 @@ def build_match_dict(in_port=None, vlan=None, eth_type=None, eth_src=None,
     return match_dict
 
 
+@functools.lru_cache()
 def flowmod(cookie, command, table_id, priority, out_port, out_group,
             match_fields, inst, hard_timeout, idle_timeout, flags=0):
     return parser.OFPFlowMod(
