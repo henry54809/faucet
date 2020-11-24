@@ -152,9 +152,10 @@ class FaucetTestBase(unittest.TestCase):
     cpn_intf = None
     cpn_ipv6 = False
     config_ports = {}
-    rand_dpids = set()
     event_sock = None
     event_log = None
+
+    rand_dpids = set()
 
     def __init__(self, name, config, root_tmpdir, ports_sock, max_test_load,
                  port_order=None, start_port=None):
@@ -1691,7 +1692,7 @@ dbs:
 
     def change_port_config(self, port, config_name, config_value,
                            conf=None, restart=True, cold_start=False,
-                           hup=True):
+                           hup=True, change_expected=True):
         if conf is None:
             conf = self._get_faucet_conf()
         if config_name is None:
@@ -1703,7 +1704,7 @@ dbs:
                 conf['dps'][self.DP_NAME]['interfaces'][port][config_name] = config_value
         self.reload_conf(
             conf, self.faucet_config_path,
-            restart, cold_start, hup=hup)
+            restart, cold_start, hup=hup, change_expected=change_expected)
 
     def change_vlan_config(self, vlan, config_name, config_value,
                            conf=None, restart=True, cold_start=False,

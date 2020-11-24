@@ -20,6 +20,7 @@
 from collections import namedtuple
 from functools import partial
 import cProfile
+import copy
 import difflib
 import io
 import ipaddress
@@ -823,9 +824,13 @@ class ValveTestBases:
                     self.configure_network()
                 for dp_id in self.valves_manager.valves:
                     reload_ofmsgs = self.last_flows_to_dp.get(dp_id, [])
+                    # When cold starting, we must either request a disconnect from the switch or have flows to send.
+                    if dp_id == self.DP_ID and before_dp_status and reload_type == 'cold' and reload_expected:
+                        self.assertTrue(reload_ofmsgs is None or reload_ofmsgs, reload_ofmsgs)
                     if reload_ofmsgs is None:
                         reload_ofmsgs = self.connect_dp(dp_id)
                     else:
+                        self._verify_wildcard_deletes(reload_type, reload_ofmsgs)
                         self.apply_ofmsgs(reload_ofmsgs, dp_id)
                     all_ofmsgs[dp_id] = reload_ofmsgs
                     if (not reload_expected and no_reload_no_table_change and
@@ -835,6 +840,15 @@ class ValveTestBases:
             self.assertEqual(before_dp_status, int(self.get_prom('dp_status')))
             self.assertEqual(error_expected, self.get_prom('faucet_config_load_error', bare=True))
             return all_ofmsgs
+
+        def _verify_wildcard_deletes(self, reload_type, reload_ofmsgs):
+            """Verify the only wildcard delete usage when warm starting, is for in_port."""
+            if reload_type != 'warm':
+                return
+            for ofmsg in reload_ofmsgs:
+                if not valve_of.is_flowdel(ofmsg):
+                    continue
+                self.assertNotEqual(ofmsg.table_id, valve_of.ofp.OFPTT_ALL, ofmsg)
 
         def update_and_revert_config(self, orig_config, new_config, reload_type,
                                      verify_func=None, before_table_states=None,
@@ -2071,14 +2085,15 @@ class ValveTestBases:
             valve = self.valves_manager.valves[self.DP_ID]
 
             match = {'in_port': 1, 'vlan_vid': 0}
-            self.apply_ofmsgs(
-                valve.port_delete(port_num=1))
+            orig_config = yaml.load(self.CONFIG, Loader=yaml.SafeLoader)
+            deletedport1_config = copy.copy(orig_config)
+            del deletedport1_config['dps'][self.DP_NAME]['interfaces']['p1']
+            self.update_config(yaml.dump(deletedport1_config))
             self.assertFalse(
                 self.network.tables[self.DP_ID].is_output(match, port=2, vid=self.V100),
                 msg='Packet output after port delete')
 
-            self.apply_ofmsgs(
-                valve.port_add(port_num=1))
+            self.update_config(self.CONFIG)
             self.assertTrue(
                 self.network.tables[self.DP_ID].is_output(match, port=2, vid=self.V100),
                 msg='Packet not output after port add')
