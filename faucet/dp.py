@@ -677,10 +677,6 @@ configuration.
         """Return ports that have LACP up."""
         return tuple([port for port in self.lacp_ports() if port.is_actor_up()])
 
-    def lacp_nosync_ports(self):
-        """Return ports that have LACP status NO SYNC."""
-        return tuple([port for port in self.lacp_ports() if port.is_actor_nosync()])
-
     def lacp_down_ports(self):
         """Return ports that have LACP not UP"""
         return tuple([port for port in self.lacp_ports() if not port.is_actor_up()])

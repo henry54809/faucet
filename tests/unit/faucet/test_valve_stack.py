@@ -319,7 +319,7 @@ dps:
         self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
         self.apply_ofmsgs(main_valve.lacp_update(port3, False, 1, 1, main_other_valves))
         self.validate_flood(2, 0, 3, False, 'Flooded out UNSELECTED & NOSYNC LAG port')
-        # self.validate_flood(2, 0, 4, False, 'Flooded out UNSELECTED LAG port')
+        self.validate_flood(2, 0, 4, False, 'Flooded out UNSELECTED LAG port')
         # Set UP & SELECTED both s1 LAG links
         self.apply_ofmsgs(main_valve.lacp_update(port3, True, 1, 1, main_other_valves))
         self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
@@ -355,8 +355,8 @@ dps:
         self.apply_ofmsgs(main_valve.lacp_update(port3, False, 1, 1, main_other_valves))
         self.validate_flood(
             3, 0, None, False, 'Packet incoming through UNSELECTED & NOSYNC port was accepted')
-        # self.validate_flood(
-        #    4, 0, None, False, 'Packet incoming through UNSELECTED port was accepted')
+        self.validate_flood(
+            4, 0, None, False, 'Packet incoming through UNSELECTED port was accepted')
         # Set UP & SELECTED both s1 LAG links
         self.apply_ofmsgs(main_valve.lacp_update(port3, True, 1, 1, main_other_valves))
         self.apply_ofmsgs(main_valve.lacp_update(port4, True, 1, 1, main_other_valves))
@@ -507,11 +507,11 @@ dps:
         for port in valve.dp.ports.values():
             if port.lacp:
                 valve.lacp_update(port, False, 1, 1, self.get_other_valves(valve))
-                # self.assertTrue(port.is_port_standby())
+                self.assertTrue(port.is_port_standby())
         for port in other_valve.dp.ports.values():
             if port.lacp:
                 other_valve.lacp_update(port, True, 1, 1, self.get_other_valves(other_valve))
-                # self.assertTrue(port.is_port_selected())
+                self.assertTrue(port.is_port_selected())
 
 
 class ValveStackRootExtLoopProtectTestCase(ValveTestBases.ValveTestNetwork):
