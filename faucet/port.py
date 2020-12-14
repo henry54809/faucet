@@ -352,24 +352,21 @@ class Port(Conf):
         test_config_condition(
             self.hairpin and self.hairpin_unicast,
             'Cannot have both hairpin and hairpin_unicast enabled')
+        dot1x_features = {
+            dot1x_feature for dot1x_feature, dot1x_config in self.defaults.items()
+            if dot1x_feature.startswith('dot1x_') and dot1x_config}
+        test_config_condition(
+            dot1x_features and not self.dot1x,
+            '802.1x features %s require port to have dot1x enabled' % dot1x_features)
         if self.dot1x:
             test_config_condition(self.number > 65535, (
                 '802.1x not supported on ports > 65535'))
-        if self.dot1x_acl:
-            test_config_condition(not self.dot1x, (
-                '802.1x_ACL requires dot1x to be enabled also'))
-        if self.dot1x_mab:
-            test_config_condition(not self.dot1x, (
-                '802.1x_MAB requires dot1x to be enabled on the port also'))
-            test_config_condition(self.dot1x_dyn_acl, (
-                '802.1x_ACL cannot be used with 802.1x_DYN_ACL'))
-        if self.dot1x_dyn_acl:
-            test_config_condition(not self.dot1x, (
-                '802.1x_DYN_ACL requires dot1x to be enabled also'))
-            test_config_condition(self.dot1x_acl, (
-                '802.1x_DYN_ACL cannot be used with 802.1x_ACL'))
-            test_config_condition(self.dot1x_acl, (
-                '802.1x_DYN_ACL cannot be used with 802.1x_MAB'))
+            if self.dot1x_mab:
+                test_config_condition(self.dot1x_dyn_acl, (
+                    '802.1x_MAB cannot be used with 802.1x_DYN_ACL'))
+            if self.dot1x_dyn_acl:
+                test_config_condition(self.dot1x_acl, (
+                    '802.1x_DYN_ACL cannot be used with 802.1x_ACL'))
         if self.coprocessor:
             self._check_conf_types(self.coprocessor, self.coprocessor_defaults_types)
             test_config_condition(
@@ -494,16 +491,21 @@ class Port(Conf):
             return False
         return True
 
+    def tunnel_acls(self):
+        """Return any tunnel ACLs on this port."""
+        acls = []
+        if self.acls_in:
+            acls = [acl for acl in self.acls_in if acl.is_tunnel_acl()]
+        return acls
+
     def contains_tunnel_acl(self, tunnel_id=None):
         """Searches through acls_in for a tunnel ACL with a matching tunnel_id"""
-        if self.acls_in:
-            for acl in self.acls_in:
-                if acl.is_tunnel_acl():
-                    if tunnel_id:
-                        if acl.get_tunnel_rules(tunnel_id):
-                            return True
-                    else:
-                        return True
+        acls = self.tunnel_acls()
+        if tunnel_id is None:
+            return bool(acls)
+        for acl in self.tunnel_acls():
+            if acl.get_tunnel_rules(tunnel_id):
+                return True
         return False
 
     # LACP functions

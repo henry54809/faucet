@@ -162,8 +162,6 @@ class FaucetMetrics(PromClient):
         self.dp_status = self._dpid_gauge(
             'dp_status',
             'status of datapaths')
-        # Changing dp_root_hop_port to _gauge from _dpid_gauge to prevent reset on cold start
-        # TODO: Temporary change, reconcile with faucet
         self.dp_root_hop_port = self._gauge(
             'dp_root_hop_port',
             'port that leads to stack root DP',

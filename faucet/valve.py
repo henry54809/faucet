@@ -18,6 +18,7 @@
 # limitations under the License.
 
 import copy
+import difflib
 import logging
 
 from collections import defaultdict, deque
@@ -109,7 +110,6 @@ class Valve:
         '_last_fast_advertise_sec',
         '_last_lldp_advertise_sec',
         '_last_packet_in_sec',
-        '_last_pipeline_flows',
         '_packet_in_count_sec',
         '_port_highwater',
         '_route_manager_by_eth_type',
@@ -148,7 +148,6 @@ class Valve:
         self.logger = None
         self.recent_ofmsgs = deque(maxlen=32)
         self.stale_root = False
-        self._last_pipeline_flows = []
         self._packet_in_count_sec = None
         self._last_packet_in_sec = None
         self._last_advertise_sec = None
@@ -233,7 +232,8 @@ class Valve:
         self.stack_manager = None
         if self.dp.stack:
             self.stack_manager = ValveStackManager(
-                self.logger, self.dp, self.dp.stack, self.dp.tunnel_acls, self.acl_manager)
+                self.logger, self.dp, self.dp.stack, self.dp.tunnel_acls, self.acl_manager,
+                self.dp.tables['eth_dst'])
 
         self._lldp_manager = ValveLLDPManager(
             self.dp.tables['vlan'], self.dp.highest_priority, self.logger,
@@ -273,10 +273,10 @@ class Valve:
                 self._route_manager_by_eth_type[eth_type] = route_manager
         self._managers = tuple(
             manager for manager in (
-                self.pipeline, self.switch_manager, self.stack_manager, self.acl_manager,
+                self.pipeline, self.switch_manager, self.acl_manager, self.stack_manager,
                 self._lldp_manager, self._route_manager_by_ipv.get(4),
                 self._route_manager_by_ipv.get(6), self._coprocessor_manager,
-                self._output_only_manager) if manager is not None)
+                self._output_only_manager, self._dot1x_manager) if manager is not None)
 
 
     def notify(self, event_dict):
@@ -382,6 +382,8 @@ class Valve:
         """Configure a VLAN."""
         self.logger.info('Configuring %s' % vlan)
         ofmsgs = []
+        if vlan.reserved_internal_vlan:
+            return ofmsgs
         for manager in self._managers:
             ofmsgs.extend(manager.add_vlan(vlan, cold_start))
         return ofmsgs
@@ -634,10 +636,7 @@ class Valve:
         self.dp.cold_start(now)
         self._inc_var('of_dp_connections')
         self._reset_dp_status()
-        table_configs = sorted([
-            (table.table_id, str(table.table_config)) for table in self.dp.tables.values()])
-        for table_id, table_config in table_configs:
-            self.logger.info('table ID %u %s' % (table_id, table_config))
+        self.logger.info(self.dp.pipeline_str())
         return ofmsgs
 
     def datapath_disconnect(self, now):
@@ -692,9 +691,6 @@ class Valve:
             for manager in self._managers:
                 ofmsgs.extend(manager.add_port(port))
 
-            if self._dot1x_manager:
-                ofmsgs.extend(self._dot1x_manager.add_port(port))
-
             if port.lacp:
                 ofmsgs.extend(self.lacp_update(port, False, cold_start=cold_start))
 
@@ -741,9 +737,6 @@ class Valve:
             # now is set to a time value only when ports_delete is called to flush
             if now:
                 self._set_port_status(port_num, False, now)
-
-            if self._dot1x_manager:
-                ofmsgs.extend(self._dot1x_manager.del_port(port))
 
             vlans_with_deleted_ports.update(set(port.vlans()))
 
@@ -1089,12 +1082,12 @@ class Valve:
 
         if updated_port:
             for vlan in updated_port.vlans():
-                if _update_vlan(vlan, now, rate_limited):
+                if not vlan.reserved_internal_vlan and _update_vlan(vlan, now, rate_limited):
                     _update_port(vlan, updated_port)
                     vlan.dyn_last_updated_metrics_sec = now
         else:
             for vlan in self.dp.vlans.values():
-                if _update_vlan(vlan, now, rate_limited):
+                if not vlan.reserved_internal_vlan and _update_vlan(vlan, now, rate_limited):
                     for port in vlan.get_ports():
                         _update_port(vlan, port)
                     vlan.dyn_last_updated_metrics_sec = now
@@ -1232,16 +1225,22 @@ class Valve:
                 'vid': vlan.vid,
                 'eth_src': entry.eth_src}})
 
-    def _pipeline_change(self):
-        def table_msgs(tfm_flow):
-            return {str(x) for x in tfm_flow.body}
+    def _pipeline_diff(self, new_dp):
+        old_pipeline = self.dp.pipeline_str().splitlines()
+        new_pipeline = new_dp.pipeline_str().splitlines()
+        differ = difflib.Differ()
+        diff = '\n'.join(differ.compare(old_pipeline, new_pipeline))
+        self.logger.info('pipeline change: %s' % diff)
 
-        if self._last_pipeline_flows:
-            _last_pipeline_flows = table_msgs(self._last_pipeline_flows[0])
-            _pipeline_flows = table_msgs(self._pipeline_flows()[0])
-            if _last_pipeline_flows != _pipeline_flows:
-                self.logger.info('pipeline change: %s' % str(
-                    _last_pipeline_flows.difference(_pipeline_flows)))
+    def _pipeline_change(self, new_dp):
+        if new_dp:
+            # With OVS/soft pipelines, only a change in allocated tables is significant.
+            if self.dp.hardware != new_dp.hardware:
+                return True
+            old_table_ids = self.dp.pipeline_tableids()
+            new_table_ids = new_dp.pipeline_tableids()
+            if old_table_ids != new_table_ids:
+                self.logger.info('table IDs changed, old %s new %s' % (old_table_ids, new_table_ids))
                 return True
         return False
 
@@ -1275,8 +1274,7 @@ class Valve:
         ofmsgs = []
 
         # If pipeline or all ports changed, default to cold start.
-        if self._pipeline_change():
-            self.logger.info('pipeline change')
+        if self._pipeline_change(new_dp):
             self.dp_init(new_dp, valves)
             return restart_type, ofmsgs
 
@@ -1384,10 +1382,9 @@ class Valve:
         old_vlan = port.dyn_dot1x_native_vlan
         ofmsgs.extend(self.switch_manager.del_port(port))
         port.dyn_dot1x_native_vlan = new_dyn_dot1x_native_vlan
-        for vlan in (old_vlan,) + (port.dyn_dot1x_native_vlan, port.native_vlan):
-            if vlan is not None:
-                vlan.reset_ports(self.dp.ports.values())
-                ofmsgs.extend(self.switch_manager.update_vlan(vlan))
+        for vlan in {old_vlan, port.dyn_dot1x_native_vlan, port.native_vlan} - {None}:
+            vlan.reset_ports(self.dp.ports.values())
+            ofmsgs.extend(self.switch_manager.update_vlan(vlan))
         ofmsgs.extend(self.switch_manager.add_port(port))
         return ofmsgs
 
@@ -1442,7 +1439,6 @@ class Valve:
         Args:
             msg (ryu.controller.ofp_event.EventOFPMsgBase): message from datapath.
         """
-        self._inc_var('of_errors')
         orig_msgs = [orig_msg for orig_msg in self.recent_ofmsgs if orig_msg.xid == msg.xid]
         error_txt = msg
         if orig_msgs:
@@ -1455,6 +1451,14 @@ class Valve:
             error_code = error_tuple[1][msg.code]
         except KeyError:
             pass
+        if (self.dp.group_table and
+                msg.type == valve_of.ofp.OFPET_GROUP_MOD_FAILED and
+                msg.code == valve_of.ofp.OFPGMFC_GROUP_EXISTS):
+            # Unlike flows, adding an overwriting group (same group_id) is considered an error.
+            # This "error" is expected with groups and redundant controllers, as one controller
+            # may delete another's groups while they synchronize with new network state.
+            return
+        self._inc_var('of_errors')
         self.logger.error('OFError type: %s code: %s %s' % (error_type, error_code, error_txt))
 
     def prepare_send_flows(self, flow_msgs):
@@ -1518,9 +1522,18 @@ class TfmValve(Valve):
                 self.dp, self, self.MAX_TABLE_ID, self.MIN_MAX_FLOWS,
                 self.USE_OXM_IDS, self.FILL_REQ))]
 
+    def _pipeline_change(self, new_dp):
+        if new_dp:
+            old_pipeline = self.dp.pipeline_str()
+            new_pipeline = new_dp.pipeline_str()
+            # TFM based pipelines, any pipeline change is significant.
+            if old_pipeline != new_pipeline:
+                self._pipeline_diff(new_dp)
+                return True
+        return False
+
     def _add_default_flows(self):
         ofmsgs = self._pipeline_flows()
-        self._last_pipeline_flows = copy.deepcopy(ofmsgs)
         ofmsgs.extend(super(TfmValve, self)._add_default_flows())
         return ofmsgs
 
