@@ -23,7 +23,7 @@ VER_FILE
 
 cat faucet/__version__.py
 
-glinux-build -type="binary" -base-path="${TMPDIR}/glinux-build" -additional-repos="enterprise-sdn-faucet-core-unstable" -name="rodete" . "${TMPDIR}/binary/"
+glinux-build -type="binary" -base-path="${TMPDIR}/glinux-build" -additional-repos="enterprise-sdn-faucet-core-unstable, glinux-rodete-stable" -name="rodete" . "${TMPDIR}/binary/"
 mkdir -p binary
 cp ${TMPDIR}/binary/* binary/
 #cp ${TMPDIR}/binary/*.deb binary/
